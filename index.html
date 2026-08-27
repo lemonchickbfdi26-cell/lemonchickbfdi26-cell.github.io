@@ -98,6 +98,33 @@ input,textarea{user-select:text; -webkit-user-select:text;}
 @keyframes fadeUp{ from{opacity:0; transform:translateY(14px);} to{opacity:1; transform:translateY(0);} }
 #splash.leaving{ transition:opacity .55s ease; opacity:0; pointer-events:none; }
 
+/* Чат поддержки в списке */
+.support-tag{
+  font-family:var(--mono); font-size:9.5px; text-transform:uppercase; letter-spacing:.4px;
+  color:var(--stamp); background:var(--stamp-soft); padding:2px 5px; border-radius:4px;
+  vertical-align:middle; margin-left:6px;
+}
+.support-row .chat-avatar img{ border-radius:9px; }
+
+/* Вкладки админ-панели */
+.admin-tabs{ display:flex; gap:6px; margin:10px 0; }
+.admin-tab{
+  flex:1; padding:9px; border:1.5px solid var(--line); background:transparent;
+  border-radius:9px; font:inherit; font-size:13px; color:var(--ink-soft); cursor:pointer;
+}
+.admin-tab.active{ border-color:var(--accent); color:var(--accent); font-weight:600; }
+.admin-tab span{
+  background:var(--accent); color:#fff8ef; border-radius:9px;
+  padding:1px 6px; font-size:11px; margin-left:4px;
+}
+.support-item{
+  display:flex; align-items:center; gap:10px; padding:11px 4px;
+  border-bottom:1px solid var(--line); cursor:pointer;
+}
+.support-item .s-name{ font-weight:600; font-size:14px; }
+.support-item .s-preview{ font-size:12.5px; color:var(--ink-soft); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.support-item .s-time{ font-family:var(--mono); font-size:10.5px; color:var(--ink-soft); flex-shrink:0; }
+
 /* Режим выделения. Панель перекрывает шапку, а не сдвигает её:
    так ничего не прыгает при входе и выходе из режима. */
 .select-bar{
@@ -753,7 +780,12 @@ button.file-card{
         <div class="field" id="admin-search-field">
           <input id="admin-search" type="text" placeholder="Поиск по имени">
         </div>
+        <div class="admin-tabs" id="admin-tabs">
+          <button class="admin-tab active" data-view="users">Пользователи</button>
+          <button class="admin-tab" data-view="support">Обращения <span id="support-badge" class="hidden">0</span></button>
+        </div>
         <div id="admin-user-list"></div>
+        <div id="admin-support-list" class="hidden"></div>
         <div id="admin-chat-list" class="hidden"></div>
         <button class="btn ghost small" id="close-admin" style="margin-top:14px;">Закрыть</button>
       </div>
@@ -894,6 +926,14 @@ function imageSize(dataUrl) {
 }
 
 /* ---------- 2. КОНСТАНТЫ / АССЕТЫ ---------- */
+// ---- ЧАТ ПОДДЕРЖКИ ----
+// uid владельца приложения. Именно с ним у каждого пользователя заводится
+// неудаляемый чат поддержки. Если аккаунт сменится — поменять здесь и в правилах.
+const SUPPORT_UID = 'qL8ZAumHS8YbubtJal6iyETMBix2';
+const SUPPORT_NAME = 'Поддержка';
+const SUPPORT_AVATAR = './icon-192.png';
+
+
 const AVATAR_KEYS = ['icon_fox', 'icon_bird', 'icon_butterfly', 'icon_penguin', 'icon_dino', 'icon_bunny'];
 const WALLPAPER_KEYS = ['wall_default', 'wall_fox_sunset', 'wall_white', 'wall_black', 'wall_pink', 'wall_purple', 'wall_green', 'wall_teal'];
 
@@ -1223,6 +1263,7 @@ auth.onAuthStateChanged(async (user) => {
     db.ref('users/' + user.uid + '/online').onDisconnect().set(false);
     hide($('#auth-screen'));
     enterApp();
+    ensureSupportChat();
 
     if (selfWatchRef && selfWatchHandler) selfWatchRef.off('value', selfWatchHandler);
     selfWatchRef = db.ref('users/' + user.uid + '/banned');
@@ -1359,15 +1400,24 @@ function listenChatList() {
       const peerUid = Object.keys(members).find((u) => u !== currentUser.uid);
       return { chatId, peerUid, kind: meta.kind || '', lastPreview: meta.lastPreview || '', updatedAt: meta.lastUpdatedAt || meta.createdAt || 0 };
     }));
-    chats.sort((a, b) => b.updatedAt - a.updatedAt);
+    // Поддержка всегда первой строкой: её ищут в трудную минуту,
+    // и она не должна тонуть под свежими переписками.
+    chats.sort((a, b) => (b.kind === 'support') - (a.kind === 'support') || b.updatedAt - a.updatedAt);
 
     const rows = await Promise.all(chats.filter((c) => c.peerUid).map(async (c) => {
-      const peerSnap = await db.ref('users/' + c.peerUid).get();
-      const peer = peerSnap.val() || { username: '?' };
-      return `<div class="chat-row" data-chat="${c.chatId}" data-peer="${c.peerUid}" data-kind="${c.kind}">
-        <div class="chat-avatar"><img src="${avatarSrc(peer)}"></div>
+      const support = c.kind === 'support';
+      let name, avatar;
+      if (support) {
+        name = SUPPORT_NAME; avatar = SUPPORT_AVATAR;
+      } else {
+        const peerSnap = await db.ref('users/' + c.peerUid).get();
+        const peer = peerSnap.val() || { username: '?' };
+        name = peer.username; avatar = avatarSrc(peer);
+      }
+      return `<div class="chat-row${support ? ' support-row' : ''}" data-chat="${c.chatId}" data-peer="${c.peerUid}" data-kind="${c.kind}">
+        <div class="chat-avatar"><img src="${avatar}"></div>
         <div class="chat-meta">
-          <div class="name">${escapeHtml(peer.username)}</div>
+          <div class="name">${escapeHtml(name)}${support ? ' <span class="support-tag">служебный</span>' : ''}</div>
           <div class="preview">${escapeHtml(c.lastPreview || 'Начните разговор')}</div>
         </div>
         <div class="chat-time">${c.updatedAt ? fmtTime(c.updatedAt) : ''}</div>
@@ -1425,6 +1475,44 @@ $('#search-username').addEventListener('input', (e) => {
   }, 250);
 });
 
+/* ---------- ЧАТ ПОДДЕРЖКИ ---------- */
+function supportChatId(uid) { return chatIdFor(uid, SUPPORT_UID); }
+function isSupportChat(chatId) { return chatId === supportChatId(currentUser.uid); }
+
+// Заводится один раз при первом входе. Идемпотентно: повторные вызовы
+// ничего не ломают, поэтому можно звать при каждой авторизации.
+async function ensureSupportChat() {
+  if (!currentUser || currentUser.uid === SUPPORT_UID) return;   // владельцу чат с самим собой не нужен
+  const cid = supportChatId(currentUser.uid);
+  try {
+    const metaSnap = await db.ref('chats/' + cid + '/meta').get();
+    if (!metaSnap.exists()) {
+      await db.ref('chats/' + cid + '/meta').set({
+        members: { [currentUser.uid]: true, [SUPPORT_UID]: true },
+        kind: 'support',
+        createdAt: firebase.database.ServerValue.TIMESTAMP,
+        lastPreview: 'Напишите нам об ошибке или предложите идею',
+      });
+    } else if (metaSnap.val().kind !== 'support') {
+      await db.ref('chats/' + cid + '/meta').update({ kind: 'support' });
+    }
+    await db.ref('userChats/' + currentUser.uid + '/' + cid).set(true);
+  } catch (e) { console.warn('чат поддержки не создан', e); }
+}
+
+// Владелец не держит сотни чатов в своём списке — обращения приходят
+// в отдельный лёгкий индекс, который читает только администратор.
+async function touchSupportIndex(preview) {
+  if (!currentUser || currentUser.uid === SUPPORT_UID) return;
+  try {
+    await db.ref('supportIndex/' + currentUser.uid).set({
+      username: currentUser.username,
+      preview: (preview || '').slice(0, 120),
+      ts: Date.now(),
+    });
+  } catch (e) { console.warn('индекс поддержки не обновлён', e); }
+}
+
 /* ---------- 15. ОТКРЫТИЕ ЧАТА ---------- */
 let adminViewMode = false;
 async function openChat(chatId, peerUid, readOnly) {
@@ -1434,8 +1522,11 @@ async function openChat(chatId, peerUid, readOnly) {
   const p = peerSnap.val() || {};
   currentPeer = { uid: peerUid, username: p.username || '?', avatar: p.avatar || 'icon_fox', avatarType: p.avatarType || 'origami' };
 
-  $('#peer-name').textContent = currentPeer.username;
-  $('#peer-avatar-img').src = avatarSrc(currentPeer);
+  const support = peerUid === SUPPORT_UID;
+  $('#peer-name').textContent = support ? SUPPORT_NAME : currentPeer.username;
+  $('#peer-avatar-img').src = support ? SUPPORT_AVATAR : avatarSrc(currentPeer);
+  // У поддержки не показываем «в сети / офлайн»: это служба, а не собеседник.
+  $('#peer-status').style.display = support ? 'none' : '';
   hide($('#main-screen'));
   hide($('#admin-modal'));
   show($('#chat-screen'));
@@ -1894,6 +1985,7 @@ async function pushMessage(payload) {
     meta.hasMedia = true;
   }
   await ref.set({ sender: currentUser.uid, ts: firebase.database.ServerValue.TIMESTAMP, ...meta });
+  if (chatAtSend === supportChatId(currentUser.uid)) touchSupportIndex(preview);
   await db.ref('chats/' + chatAtSend + '/meta').update({ lastPreview: preview, lastUpdatedAt: Date.now() });
   animateNextBubbleFly();
 }
@@ -2176,14 +2268,67 @@ $('#publish-post-btn').onclick = async () => {
 
 /* ---------- 23. АДМИН-ПАНЕЛЬ ---------- */
 async function openAdminPanel() {
-  $('#admin-title').textContent = 'Пользователи';
-  show($('#admin-search-field'));
-  hide($('#admin-chat-list'));
-  show($('#admin-user-list'));
+  $('#admin-title').textContent = 'Администрирование';
+  show($('#admin-tabs'));
   show($('#admin-modal'));
-  await renderAdminUserList('');
-  $('#admin-search').value = '';
+  await switchAdminView('users');
+  updateSupportBadge();
   $('#admin-search').oninput = (e) => renderAdminUserList(safeKey(e.target.value));
+  $all('.admin-tab').forEach((b) => { b.onclick = () => switchAdminView(b.dataset.view); });
+}
+
+// Счётчик обращений на вкладке — узел лёгкий, читать его дёшево.
+async function updateSupportBadge() {
+  const badge = $('#support-badge');
+  try {
+    const snap = await db.ref('supportIndex').get();
+    const n = snap.exists() ? snap.numChildren() : 0;
+    badge.textContent = n;
+    badge.classList.toggle('hidden', n === 0);
+  } catch (e) { badge.classList.add('hidden'); }
+}
+
+async function switchAdminView(view) {
+  $all('.admin-tab').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
+  hide($('#admin-chat-list'));
+  const users = view === 'users';
+  $('#admin-search-field').classList.toggle('hidden', !users);
+  $('#admin-user-list').classList.toggle('hidden', !users);
+  $('#admin-support-list').classList.toggle('hidden', users);
+  if (users) { $('#admin-search').value = ''; await renderAdminUserList(''); }
+  else await renderSupportInbox();
+}
+
+// Обращения читаются из лёгкого индекса, а не из всех чатов подряд:
+// иначе владельцу пришлось бы тянуть переписку каждого пользователя.
+async function renderSupportInbox() {
+  const list = $('#admin-support-list');
+  list.innerHTML = '<div class="empty-state">Загрузка…</div>';
+  let snap;
+  try { snap = await db.ref('supportIndex').get(); }
+  catch (e) { list.innerHTML = '<div class="empty-state">Нет доступа к обращениям</div>'; return; }
+  if (!snap.exists()) { list.innerHTML = '<div class="empty-state">Обращений пока нет</div>'; return; }
+
+  const items = [];
+  snap.forEach((child) => { items.push({ uid: child.key, ...child.val() }); });
+  items.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+
+  list.innerHTML = items.map((it) => `
+    <div class="support-item" data-uid="${it.uid}">
+      <div class="chat-meta grow">
+        <div class="s-name">${escapeHtml(it.username || it.uid)}</div>
+        <div class="s-preview">${escapeHtml(it.preview || '')}</div>
+      </div>
+      <div class="s-time">${it.ts ? fmtTime(it.ts) : ''}</div>
+    </div>`).join('');
+
+  $all('.support-item').forEach((el) => {
+    el.onclick = () => {
+      const uid = el.dataset.uid;
+      // Открываем обычным чатом, а не в режиме просмотра: на обращение надо отвечать.
+      openChat(chatIdFor(uid, SUPPORT_UID), uid);
+    };
+  });
 }
 $('#close-admin').onclick = () => hide($('#admin-modal'));
 
