@@ -10,6 +10,16 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="mobile-web-app-capable" content="yes">
 <link rel="manifest" href="manifest.json">
+<!-- Экранная консоль для отладки с телефона: открой сайт с ?debug=1 в адресе.
+     Загружается только по запросу, на обычных запусках ничего не тянет. -->
+<script>
+  if (new URLSearchParams(location.search).has('debug')) {
+    const el = document.createElement('script');
+    el.src = 'https://cdnjs.cloudflare.com/ajax/libs/eruda/3.0.1/eruda.min.js';
+    el.onload = () => { window.eruda && window.eruda.init(); };
+    document.head.appendChild(el);
+  }
+</script>
 <link rel="apple-touch-icon" href="icon-192.png">
 <link rel="icon" href="icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -1497,7 +1507,10 @@ async function ensureSupportChat() {
       await db.ref('chats/' + cid + '/meta').update({ kind: 'support' });
     }
     await db.ref('userChats/' + currentUser.uid + '/' + cid).set(true);
-  } catch (e) { console.warn('чат поддержки не создан', e); }
+  } catch (e) {
+    console.warn('чат поддержки не создан', e);
+    toast('Поддержка недоступна: ' + (e.code || e.message));
+  }
 }
 
 // Владелец не держит сотни чатов в своём списке — обращения приходят
