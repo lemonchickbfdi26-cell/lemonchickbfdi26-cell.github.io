@@ -1,0 +1,56 @@
+{
+  "rules": {
+
+    "users": {
+      ".read": "auth != null",
+
+      "$uid": {
+        ".write": "auth != null && (auth.uid === $uid || root.child('users').child(auth.uid).child('admin').val() === true)",
+
+        "admin":  { ".validate": "root.child('users').child(auth.uid).child('admin').val() === true" },
+        "banned": { ".validate": "root.child('users').child(auth.uid).child('admin').val() === true" }
+      }
+    },
+
+    "usernames": {
+      ".read": true,
+
+      "$name": {
+        ".write": "auth != null && ( (!data.exists() && newData.val() === auth.uid) || (data.exists() && (data.val() === auth.uid || root.child('users').child(auth.uid).child('admin').val() === true)) )"
+      }
+    },
+
+    "userChats": {
+      "$uid": {
+        ".read": "auth != null && (auth.uid === $uid || root.child('users').child(auth.uid).child('admin').val() === true)",
+        ".write": "auth != null && auth.uid === $uid"
+      }
+    },
+
+    "chats": {
+      "$chatId": {
+        ".read": "auth != null && (data.child('meta/members').child(auth.uid).exists() || root.child('users').child(auth.uid).child('admin').val() === true)",
+        ".write": "auth != null && (data.child('meta/members').child(auth.uid).exists() || !data.exists() || root.child('users').child(auth.uid).child('admin').val() === true) && root.child('users').child(auth.uid).child('banned').val() !== true"
+      }
+    },
+
+    "posts": {
+      ".read": "auth != null",
+      ".indexOn": "ts",
+
+      "$postId": {
+        ".write": "auth != null && ( (!data.exists() && newData.child('author').val() === auth.uid) || (data.exists() && (data.child('author').val() === auth.uid || root.child('users').child(auth.uid).child('admin').val() === true)) )",
+
+        ".validate": "newData.hasChildren(['author', 'ts'])",
+
+        "author":       { ".validate": "newData.isString() && newData.val() === auth.uid" },
+        "ts":           { ".validate": "newData.isNumber()" },
+        "text":         { ".validate": "newData.isString() && newData.val().length <= 500" },
+        "imageDataUrl": { ".validate": "newData.isString() && newData.val().length <= 400000" },
+
+        "$other": { ".validate": false }
+      }
+    }
+
+  }
+}
