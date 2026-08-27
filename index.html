@@ -98,6 +98,25 @@ input,textarea{user-select:text; -webkit-user-select:text;}
 @keyframes fadeUp{ from{opacity:0; transform:translateY(14px);} to{opacity:1; transform:translateY(0);} }
 #splash.leaving{ transition:opacity .55s ease; opacity:0; pointer-events:none; }
 
+/* Индикация загрузки медиа: файлы больше не лежат в разметке,
+   поэтому между нажатием и воспроизведением есть заметная пауза. */
+.spin{
+  display:inline-block; width:13px; height:13px; border-radius:50%;
+  border:2px solid rgba(255,248,239,.35); border-top-color:#fff8ef;
+  animation: spin .7s linear infinite;
+}
+@keyframes spin{ to{ transform:rotate(360deg); } }
+.play-badge.loading{ opacity:.45; }
+.play-badge.loading svg{ animation: spin 1s linear infinite; }
+/* Карточка файла стала кнопкой — возвращаем ей вид ссылки. */
+button.file-card{
+  font:inherit; color:inherit; text-align:left; border:none; cursor:pointer;
+  width:100%; background:rgba(47,42,34,.05);
+}
+@media (prefers-reduced-motion: reduce){
+  .spin, .play-badge.loading svg{ animation:none; }
+}
+
 /* ============ ФОНЫ ЭКРАНОВ ============ */
 /* Один и тот же слой для всех экранов: картинка + бумажная вуаль поверх.
    Прозрачность вуали настраивается через --bg-tint прямо на элементе экрана,
@@ -1375,6 +1394,7 @@ function listenMessages(chatId) {
     });
     lastRenderedCount = items.length;
     wireBubbleEvents(box);
+    setTimeout(() => migrateInlineMedia(listeningTo, items), 1500);
     if (wasNearBottom || isNew) box.scrollTop = box.scrollHeight;
    } catch (err) { console.error('Ошибка отрисовки сообщений:', err); }
   }, (err) => {
@@ -1383,29 +1403,92 @@ function listenMessages(chatId) {
   });
 }
 
+/* ---------- ПЕРЕНОС СТАРЫХ ВЛОЖЕНИЙ ---------- */
+// Сообщения, отправленные до разделения, всё ещё носят файл внутри себя и тянут
+// весь узел messages при каждом открытии чата. Переносим их в media по одному,
+// в фоне, без блокировки интерфейса.
+const migratedChats = new Set();
+
+async function migrateInlineMedia(chatId, items) {
+  if (migratedChats.has(chatId)) return;   // один заход на чат за сессию
+  migratedChats.add(chatId);
+  const stale = items.filter((m) => m.dataUrl);
+  if (!stale.length) return;
+
+  for (const m of stale) {
+    try {
+      // Порядок важен: сначала копия, потом удаление оригинала.
+      // Если второй шаг сорвётся, данные останутся в обоих местах — это безопасно,
+      // а обратный порядок мог бы потерять файл насовсем.
+      await db.ref('chats/' + chatId + '/media/' + m.id).set(m.dataUrl);
+      await db.ref('chats/' + chatId + '/messages/' + m.id).update({ dataUrl: null, hasMedia: true });
+      mediaCache.set(chatId + '/' + m.id, m.dataUrl);
+    } catch (e) {
+      console.warn('не удалось перенести вложение', m.id, e);
+      migratedChats.delete(chatId);   // разрешаем повтор при следующем открытии
+      return;
+    }
+  }
+  console.log('перенесено вложений:', stale.length);
+}
+
+/* ---------- МЕДИА ПО ТРЕБОВАНИЮ ---------- */
+// Файлы лежат в chats/<id>/media/<msgId> и тянутся только когда их попросили.
+// Кэш держим в памяти: повторное нажатие на то же голосовое не идёт в сеть.
+const mediaCache = new Map();
+
+async function loadMedia(chatId, msgId) {
+  const key = chatId + '/' + msgId;
+  if (mediaCache.has(key)) return mediaCache.get(key);
+  const snap = await db.ref('chats/' + chatId + '/media/' + msgId).get();
+  const url = snap.val();
+  if (!url) throw new Error('медиа не найдено');
+  mediaCache.set(key, url);
+  return url;
+}
+
+// Старые сообщения хранят файл прямо в себе. Отдаём его без обращения к сети.
+function inlineMedia(el) {
+  const u = el.dataset.url;
+  return u && u !== 'undefined' ? u : null;
+}
+
+// Достаёт содержимое для элемента: сперва встроенное, иначе из узла media.
+async function mediaFor(el) {
+  const inline = inlineMedia(el);
+  if (inline) return inline;
+  return loadMedia(currentChatId, el.dataset.msg);
+}
+
 function renderBubble(m, mine) {
   const time = `<span class="time">${fmtTime(m.ts)}</span>`;
   if (m.type === 'text') return `<div class="bubble">${escapeHtml(m.text)}${time}</div>`;
+  // data-msg — ключ сообщения, по нему подтягивается файл из узла media.
+  // data-url заполняется только у старых сообщений, где файл лежит внутри самого
+  // сообщения: их надо продолжать показывать без обращения к media.
+  const ref = `data-msg="${m.id}"${m.dataUrl ? ` data-url="${m.dataUrl}"` : ''}`;
+
   if (m.type === 'voice') {
     const bars = Array.from({ length: 18 }, () => Math.round(6 + Math.random() * 16)).map((h) => `<span style="height:${h}px"></span>`).join('');
-    return `<div class="bubble"><div class="voice-msg" data-url="${m.dataUrl}">
+    return `<div class="bubble"><div class="voice-msg" ${ref}>
       <button class="voice-play">${ico('play', 14)}</button>
       <div class="voice-wave">${bars}</div>
       <span class="voice-dur">${fmtDur(m.duration)}</span>
     </div>${time}</div>`;
   }
   if (m.type === 'video') {
+    // Видео не подставляем сразу: кружок показывает заглушку, файл грузится по нажатию.
     return `<div class="bubble" style="background:transparent;box-shadow:none;padding:0;">
-      <div class="video-circle" data-url="${m.dataUrl}">
-        <video src="${m.dataUrl}" playsinline muted loop></video>
+      <div class="video-circle" ${ref}>
+        <video playsinline muted loop${m.dataUrl ? ` src="${m.dataUrl}"` : ''}></video>
         <div class="play-badge">${ico('play', 34)}</div>
       </div>${time}</div>`;
   }
   if (m.type === 'file') {
-    return `<div class="bubble"><a class="file-card" href="${m.dataUrl}" download="${escapeHtml(m.fileName)}" style="color:inherit;text-decoration:none;">
+    return `<div class="bubble"><button class="file-card" ${ref} data-name="${escapeHtml(m.fileName)}">
       <div class="file-ico">${ico('file', 17)}</div>
       <div class="file-info"><div class="file-name">${escapeHtml(m.fileName)}</div><div class="file-size">${fmtSize(m.fileSize)}</div></div>
-    </a>${time}</div>`;
+    </button>${time}</div>`;
   }
   // Типы из прежних версий приложения (стикеры, приглашения в игру).
   const legacy = { sticker: 'стикер', game_invite: 'приглашение в игру' }[m.type];
@@ -1415,10 +1498,15 @@ function renderBubble(m, mine) {
 
 function wireBubbleEvents(box) {
   box.querySelectorAll('.voice-play').forEach((btn) => {
-    btn.onclick = () => {
+    btn.onclick = async () => {
       const wrap = btn.closest('.voice-msg');
-      const url = wrap.dataset.url;
       $all('audio.temp-audio').forEach((a) => a.remove());
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spin"></span>';
+      let url;
+      try { url = await mediaFor(wrap); }
+      catch (e) { btn.disabled = false; btn.innerHTML = ico('play', 14); toast('Не удалось загрузить запись'); return; }
+      btn.disabled = false;
       const audio = document.createElement('audio');
       audio.src = url; audio.className = 'temp-audio hidden';
       document.body.appendChild(audio);
@@ -1427,12 +1515,35 @@ function wireBubbleEvents(box) {
       audio.onended = () => { btn.innerHTML = ico('play', 14); audio.remove(); };
     };
   });
+
   box.querySelectorAll('.video-circle').forEach((circ) => {
-    circ.onclick = () => {
+    circ.onclick = async () => {
       const v = circ.querySelector('video');
       const badge = circ.querySelector('.play-badge');
+      if (!v.src) {
+        badge.classList.add('loading');
+        try { v.src = await mediaFor(circ); }
+        catch (e) { badge.classList.remove('loading'); toast('Не удалось загрузить кружок'); return; }
+        badge.classList.remove('loading');
+      }
       if (v.paused) { v.play(); badge.style.display = 'none'; v.muted = false; }
       else { v.pause(); badge.style.display = 'flex'; }
+    };
+  });
+
+  box.querySelectorAll('.file-card').forEach((card) => {
+    card.onclick = async () => {
+      const info = card.querySelector('.file-size');
+      const was = info.textContent;
+      info.textContent = 'загрузка…';
+      let url;
+      try { url = await mediaFor(card); }
+      catch (e) { info.textContent = was; toast('Не удалось загрузить файл'); return; }
+      info.textContent = was;
+      // Скачивание через временную ссылку: сам файл в разметке больше не лежит.
+      const a = document.createElement('a');
+      a.href = url; a.download = card.dataset.name || 'file';
+      document.body.appendChild(a); a.click(); a.remove();
     };
   });
 }
@@ -1443,7 +1554,16 @@ async function pushMessage(payload) {
   const preview = { text: payload.text, voice: 'голосовое сообщение 🎙', video: 'видео-кружок ⭕', file: 'файл: ' + (payload.fileName || '') }[payload.type] || '';
   const chatAtSend = currentChatId;
   const ref = db.ref('chats/' + chatAtSend + '/messages').push();
-  await ref.set({ sender: currentUser.uid, ts: firebase.database.ServerValue.TIMESTAMP, ...payload });
+  // Тяжёлое содержимое НЕ кладём в сообщение: узел messages читается целиком
+  // при каждом открытии чата, и один файл на пол-мегабайта тормозит всю переписку.
+  const { dataUrl, ...meta } = payload;
+  if (dataUrl) {
+    // Сначала медиа, потом сообщение. Обратный порядок дал бы пузырь,
+    // указывающий на ещё не существующий файл.
+    await db.ref('chats/' + chatAtSend + '/media/' + ref.key).set(dataUrl);
+    meta.hasMedia = true;
+  }
+  await ref.set({ sender: currentUser.uid, ts: firebase.database.ServerValue.TIMESTAMP, ...meta });
   await db.ref('chats/' + chatAtSend + '/meta').update({ lastPreview: preview, lastUpdatedAt: Date.now() });
   animateNextBubbleFly();
 }
