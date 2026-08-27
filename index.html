@@ -98,6 +98,21 @@ input,textarea{user-select:text; -webkit-user-select:text;}
 @keyframes fadeUp{ from{opacity:0; transform:translateY(14px);} to{opacity:1; transform:translateY(0);} }
 #splash.leaving{ transition:opacity .55s ease; opacity:0; pointer-events:none; }
 
+/* Режим выделения. Панель перекрывает шапку, а не сдвигает её:
+   так ничего не прыгает при входе и выходе из режима. */
+.select-bar{
+  position:absolute; top:0; left:0; right:0; z-index:6;
+  display:flex; align-items:center; gap:10px; padding:10px 12px;
+  background:var(--paper-dark); border-bottom:1px solid var(--line);
+  min-height:56px; box-sizing:border-box;
+}
+.select-bar .icon-btn.danger{ color:var(--danger); }
+.msg-row.selected .bubble{ outline:2px solid var(--accent); outline-offset:2px; }
+.chat-row.selected{ background:rgba(184,66,42,.16); }
+/* Во время выделения отключаем выделение текста, иначе долгое нажатие
+   на телефоне начинает выделять слова вместо сообщения. */
+.selecting, .selecting *{ -webkit-user-select:none; user-select:none; }
+
 /* Фото и видео в переписке. Высота задаётся через padding-bottom от ширины:
    так место под картинку резервируется до её загрузки и лента не прыгает. */
 .media-bubble{ max-width:74%; }
@@ -538,6 +553,11 @@ button.file-card{
       <!-- ---- ВКЛАДКА: ЧАТЫ ---- -->
       <div id="tab-chats" class="tab-pane">
       <div class="screen-bg" data-bg="bg_chats"><img alt=""><div class="tint"></div></div>
+        <div class="select-bar hidden" id="chat-select-bar">
+          <button class="icon-btn" id="chat-select-cancel"></button>
+          <div class="grow" id="chat-select-count">Выбрано 0</div>
+          <button class="icon-btn danger" id="chat-select-delete"></button>
+        </div>
         <div class="topbar">
           <h2 class="grow">Чаты</h2>
           <button class="icon-btn" id="new-chat-fab-top"></button>
@@ -615,6 +635,11 @@ button.file-card{
           <span class="status" id="peer-status"></span>
         </div>
         <button class="icon-btn" id="chat-menu-btn"></button>
+      </div>
+      <div class="select-bar hidden" id="msg-select-bar">
+        <button class="icon-btn" id="msg-select-cancel"></button>
+        <div class="grow" id="msg-select-count">Выбрано 0</div>
+        <button class="icon-btn danger" id="msg-select-delete"></button>
       </div>
       <div class="readonly-banner hidden" id="readonly-banner">🛡 Режим администратора — только просмотр переписки</div>
       <div id="messages"></div>
@@ -1332,14 +1357,14 @@ function listenChatList() {
       const meta = metaSnap.val() || {};
       const members = meta.members || {};
       const peerUid = Object.keys(members).find((u) => u !== currentUser.uid);
-      return { chatId, peerUid, lastPreview: meta.lastPreview || '', updatedAt: meta.lastUpdatedAt || meta.createdAt || 0 };
+      return { chatId, peerUid, kind: meta.kind || '', lastPreview: meta.lastPreview || '', updatedAt: meta.lastUpdatedAt || meta.createdAt || 0 };
     }));
     chats.sort((a, b) => b.updatedAt - a.updatedAt);
 
     const rows = await Promise.all(chats.filter((c) => c.peerUid).map(async (c) => {
       const peerSnap = await db.ref('users/' + c.peerUid).get();
       const peer = peerSnap.val() || { username: '?' };
-      return `<div class="chat-row" data-chat="${c.chatId}" data-peer="${c.peerUid}">
+      return `<div class="chat-row" data-chat="${c.chatId}" data-peer="${c.peerUid}" data-kind="${c.kind}">
         <div class="chat-avatar"><img src="${avatarSrc(peer)}"></div>
         <div class="chat-meta">
           <div class="name">${escapeHtml(peer.username)}</div>
@@ -1349,7 +1374,20 @@ function listenChatList() {
       </div>`;
     }));
     body.innerHTML = rows.join('') || '<div class="empty-state">Пока нет ни одного письма.</div>';
-    $all('.chat-row').forEach((row) => { row.onclick = () => openChat(row.dataset.chat, row.dataset.peer); });
+    $all('.chat-row').forEach((row) => {
+      onLongPress(row, () => chatSelectionToggle(row.dataset.chat, row));
+      row.onclick = () => {
+        // В режиме выделения нажатие переключает выбор, а не открывает чат.
+        if (chatSelection.size) { chatSelectionToggle(row.dataset.chat, row); return; }
+        openChat(row.dataset.chat, row.dataset.peer);
+      };
+    });
+    // Список перерисовывается при каждом изменении — чистим выбор от исчезнувших чатов.
+    if (chatSelection.size) {
+      const alive = new Set(chats.map((c) => c.chatId));
+      for (const id of [...chatSelection]) if (!alive.has(id)) chatSelection.delete(id);
+      chatSelectionUpdate();
+    }
   });
 }
 
@@ -1458,6 +1496,7 @@ function listenMessages(chatId) {
   // ВАЖНО: снимаем слушателя со СТАРОГО рефа до того, как перезапишем msgsRef.
   if (msgsRef && msgsHandler) msgsRef.off('value', msgsHandler);
   msgsHandler = null;
+  msgSelectionClear();
   msgsRef = db.ref('chats/' + chatId + '/messages').limitToLast(200);
   lastRenderedCount = 0;
   const listeningTo = chatId;
@@ -1478,11 +1517,29 @@ function listenMessages(chatId) {
       const mine = m.sender === currentUser.uid;
       const el = document.createElement('div');
       el.className = 'msg-row' + (mine ? ' mine' : '');
+      el.dataset.msg = m.id;
       el.innerHTML = renderBubble(m, mine);
+      // Удалять даём только свои сообщения: чужие в личной переписке
+      // трогать нельзя, даже находясь в этом же чате.
+      if (mine && !adminViewMode) {
+        onLongPress(el, () => msgSelectionToggle(m.id));
+        el.addEventListener('click', (ev) => {
+          if (!msgSelection.size) return;      // вне режима выделения клик работает как обычно
+          ev.preventDefault(); ev.stopPropagation();
+          msgSelectionToggle(m.id);
+        }, true);
+      }
       box.appendChild(el);
     });
     lastRenderedCount = items.length;
     wireBubbleEvents(box);
+    // Список перерисовывается целиком при любом изменении — возвращаем подсветку.
+    if (msgSelection.size) {
+      for (const id of [...msgSelection]) {
+        if (!items.some((it) => it.id === id)) msgSelection.delete(id);   // сообщение уже удалено
+      }
+      msgSelectionUpdate();
+    }
     setTimeout(() => migrateInlineMedia(listeningTo, items), 1500);
     if (wasNearBottom || isNew) box.scrollTop = box.scrollHeight;
    } catch (err) { console.error('Ошибка отрисовки сообщений:', err); }
@@ -1602,6 +1659,114 @@ function renderBubble(m, mine) {
   return `<div class="bubble" style="opacity:.65;font-style:italic;">сообщение не поддерживается${time}</div>`;
 }
 
+/* ---------- ВЫДЕЛЕНИЕ И УДАЛЕНИЕ ---------- */
+// Долгое нажатие вместо правой кнопки: на телефоне другого способа нет.
+// 450 мс — компромисс: короче срабатывает при прокрутке, длиннее ощущается зависанием.
+const LONG_PRESS_MS = 450;
+function onLongPress(el, handler) {
+  let timer = null, startY = 0, fired = false;
+  const cancel = () => { clearTimeout(timer); timer = null; };
+  el.addEventListener('touchstart', (e) => {
+    fired = false;
+    startY = e.touches[0].clientY;
+    timer = setTimeout(() => { fired = true; handler(); }, LONG_PRESS_MS);
+  }, { passive: true });
+  // Прокрутка не должна превращаться в выделение.
+  el.addEventListener('touchmove', (e) => {
+    if (Math.abs(e.touches[0].clientY - startY) > 10) cancel();
+  }, { passive: true });
+  el.addEventListener('touchend', (e) => { cancel(); if (fired) e.preventDefault(); });
+  el.addEventListener('touchcancel', cancel);
+  // На компьютере — правая кнопка, чтобы можно было проверять в браузере.
+  el.addEventListener('contextmenu', (e) => { e.preventDefault(); handler(); });
+}
+
+/* --- выделение сообщений --- */
+const msgSelection = new Set();
+
+function msgSelectionUpdate() {
+  const on = msgSelection.size > 0;
+  $('#msg-select-bar').classList.toggle('hidden', !on);
+  $('#messages').classList.toggle('selecting', on);
+  $('#msg-select-count').textContent = 'Выбрано ' + msgSelection.size;
+  $all('#messages .msg-row').forEach((row) => {
+    row.classList.toggle('selected', msgSelection.has(row.dataset.msg));
+  });
+}
+function msgSelectionClear() { msgSelection.clear(); msgSelectionUpdate(); }
+function msgSelectionToggle(id) {
+  if (msgSelection.has(id)) msgSelection.delete(id); else msgSelection.add(id);
+  msgSelectionUpdate();
+}
+
+async function deleteSelectedMessages() {
+  const ids = [...msgSelection];
+  if (!ids.length) return;
+  const ok = await askConfirm(
+    ids.length === 1 ? 'Удалить сообщение?' : `Удалить сообщения (${ids.length})?`,
+    'Оно исчезнет у обоих собеседников. Это нельзя отменить.'
+  );
+  if (!ok) return;
+  const chatId = currentChatId;
+  let failed = 0;
+  for (const id of ids) {
+    try {
+      await db.ref('chats/' + chatId + '/messages/' + id).remove();
+      // Вложение живёт отдельно — без этого в базе останется мусор,
+      // который никто уже не увидит и не удалит.
+      await db.ref('chats/' + chatId + '/media/' + id).remove();
+      mediaCache.delete('chats/' + chatId + '/media/' + id);
+    } catch (e) { failed++; console.warn('не удалось удалить', id, e); }
+  }
+  msgSelectionClear();
+  if (failed) toast('Не удалось удалить: ' + failed);
+}
+
+$('#msg-select-cancel').onclick = msgSelectionClear;
+$('#msg-select-delete').onclick = deleteSelectedMessages;
+
+/* --- выделение чатов --- */
+const chatSelection = new Set();
+
+function chatSelectionUpdate() {
+  const on = chatSelection.size > 0;
+  $('#chat-select-bar').classList.toggle('hidden', !on);
+  $('#chatlist-body').classList.toggle('selecting', on);
+  $('#chat-select-count').textContent = 'Выбрано ' + chatSelection.size;
+  $all('#chatlist-body .chat-row').forEach((row) => {
+    row.classList.toggle('selected', chatSelection.has(row.dataset.chat));
+  });
+}
+function chatSelectionClear() { chatSelection.clear(); chatSelectionUpdate(); }
+function chatSelectionToggle(id, row) {
+  // Чат поддержки удалить нельзя — через него с пользователем связывается администратор.
+  if (row && row.dataset.kind === 'support') { toast('Чат поддержки удалить нельзя'); return; }
+  if (chatSelection.has(id)) chatSelection.delete(id); else chatSelection.add(id);
+  chatSelectionUpdate();
+}
+
+async function deleteSelectedChats() {
+  const ids = [...chatSelection];
+  if (!ids.length) return;
+  const ok = await askConfirm(
+    ids.length === 1 ? 'Удалить чат?' : `Удалить чаты (${ids.length})?`,
+    'Переписка исчезнет из вашего списка. У собеседника она останется.'
+  );
+  if (!ok) return;
+  let failed = 0;
+  for (const id of ids) {
+    // Удаляем только свою запись в списке. Сама переписка и записи собеседника
+    // не трогаются: иначе один человек мог бы стереть историю у другого.
+    try { await db.ref('userChats/' + currentUser.uid + '/' + id).remove(); }
+    catch (e) { failed++; console.warn('не удалось удалить чат', id, e); }
+  }
+  chatSelectionClear();
+  if (failed) toast('Не удалось удалить: ' + failed);
+}
+
+$('#chat-select-cancel').onclick = chatSelectionClear;
+$('#chat-select-delete').onclick = deleteSelectedChats;
+
 /* ---------- ПОЛНОЭКРАННЫЙ ПРОСМОТР ---------- */
 let viewerUrl = null, viewerName = '';
 
@@ -1629,6 +1794,10 @@ async function openViewer(el) {
   $('#viewer').classList.add('open');
 }
 
+$('#msg-select-cancel').innerHTML = ico('close', 18);
+$('#msg-select-delete').innerHTML = ico('trash', 18);
+$('#chat-select-cancel').innerHTML = ico('close', 18);
+$('#chat-select-delete').innerHTML = ico('trash', 18);
 $('#viewer-close').innerHTML = ico('close', 18);
 $('#viewer-save').innerHTML = ico('file', 18);
 $('#viewer-close').onclick = closeViewer;
