@@ -98,6 +98,44 @@ input,textarea{user-select:text; -webkit-user-select:text;}
 @keyframes fadeUp{ from{opacity:0; transform:translateY(14px);} to{opacity:1; transform:translateY(0);} }
 #splash.leaving{ transition:opacity .55s ease; opacity:0; pointer-events:none; }
 
+/* Фото и видео в переписке. Высота задаётся через padding-bottom от ширины:
+   так место под картинку резервируется до её загрузки и лента не прыгает. */
+.media-bubble{ max-width:74%; }
+.media-thumb{
+  position:relative; width:220px; max-width:100%; height:0; cursor:pointer;
+  background:rgba(47,42,34,.08); border-radius:12px; overflow:hidden;
+}
+.media-thumb img{
+  position:absolute; inset:0; width:100%; height:100%; object-fit:cover; display:block;
+  /* превью крошечное и растянуто — лёгкое размытие честнее, чем видимые пиксели */
+  filter:blur(.4px);
+}
+.media-badge{
+  position:absolute; inset:0; display:flex; align-items:center; justify-content:center; gap:6px;
+  flex-direction:column; color:#fff8ef; background:rgba(23,19,16,.28); text-shadow:0 1px 6px rgba(0,0,0,.6);
+  font-family:var(--mono); font-size:11px;
+}
+.media-thumb.busy::after{
+  content:''; position:absolute; inset:0; background:rgba(23,19,16,.35);
+}
+
+/* Полноэкранный просмотр */
+#viewer{
+  position:fixed; inset:0; z-index:900; display:none; align-items:center; justify-content:center;
+  background:rgba(18,15,12,.94); padding:12px;
+}
+#viewer.open{ display:flex; }
+#viewer img, #viewer video{ max-width:100%; max-height:88vh; border-radius:8px; display:block; }
+#viewer .viewer-bar{
+  position:absolute; top:0; left:0; right:0; display:flex; justify-content:space-between;
+  align-items:center; padding:10px 14px; color:var(--paper); font-size:13px; gap:12px;
+}
+#viewer .viewer-bar button{
+  background:rgba(247,242,231,.14); border:none; color:var(--paper); border-radius:9px;
+  padding:8px 10px; cursor:pointer; display:flex; align-items:center;
+}
+#viewer .viewer-name{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; opacity:.75; }
+
 /* Индикация загрузки медиа: файлы больше не лежат в разметке,
    поэтому между нажатием и воспроизведением есть заметная пауза. */
 .spin{
@@ -656,7 +694,7 @@ button.file-card{
         <div id="post-image-preview" class="post-image-preview hidden"><img id="post-image-preview-img" src=""><button id="post-image-remove">✕</button></div>
         <label class="btn ghost small" style="display:inline-block;margin-top:10px;">
           Добавить фото
-          <input type="file" id="post-image-input" accept="image/*" class="hidden">
+          <input type="file" id="post-image-input" accept="image/*,video/*" class="hidden">
         </label>
         <div class="auth-error" id="post-error"></div>
         <button class="btn ink" id="publish-post-btn" style="margin-top:12px;">Опубликовать</button>
@@ -752,6 +790,11 @@ const db = firebase.database();
 auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL).catch(console.error);
 
 const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024; // 5 МБ — лимит бесплатного хранилища
+// Потолок для узла media. Файл кодируется в base64 и раздувается примерно на треть,
+// поэтому в символах он занимает больше, чем весит на диске. Значение совпадает
+// с правилом в Firebase: проверяем здесь, чтобы показать понятную ошибку,
+// а не молчаливый отказ базы.
+const MAX_MEDIA_CHARS = 8000000;
 function blobToDataUrl(blob) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -776,6 +819,43 @@ function compressImageFile(file, maxSize, quality) {
     }; img.onerror = reject; img.src = reader.result; };
     reader.onerror = reject;
     reader.readAsDataURL(file);
+  });
+}
+
+// Превью для ленты чата. Намеренно крошечное: оно едет внутри самого сообщения,
+// а узел messages читается целиком при каждом открытии чата. 160px хватает
+// на пузырь, а весит 3-5 КБ вместо сотен килобайт оригинала.
+const THUMB_SIZE = 160, THUMB_Q = 0.45;
+
+// Кадр из видеофайла — чтобы в чате была картинка, а не серый прямоугольник.
+function videoThumbnail(file) {
+  return new Promise((resolve, reject) => {
+    const v = document.createElement('video');
+    v.preload = 'metadata'; v.muted = true; v.playsInline = true;
+    const url = URL.createObjectURL(file);
+    const cleanup = () => URL.revokeObjectURL(url);
+    v.onloadedmetadata = () => { v.currentTime = Math.min(0.1, (v.duration || 1) / 10); };
+    v.onseeked = () => {
+      const scale = THUMB_SIZE / Math.max(v.videoWidth, v.videoHeight);
+      const c = document.createElement('canvas');
+      c.width = Math.round(v.videoWidth * scale); c.height = Math.round(v.videoHeight * scale);
+      c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+      cleanup();
+      resolve({ thumb: c.toDataURL('image/jpeg', THUMB_Q), w: v.videoWidth, h: v.videoHeight, duration: v.duration });
+    };
+    v.onerror = () => { cleanup(); reject(new Error('не удалось прочитать видео')); };
+    v.src = url;
+  });
+}
+
+// Размеры оригинала нужны, чтобы пузырь занял правильное место
+// и лента не прыгала, пока грузится полная картинка.
+function imageSize(dataUrl) {
+  return new Promise((resolve) => {
+    const i = new Image();
+    i.onload = () => resolve({ w: i.naturalWidth, h: i.naturalHeight });
+    i.onerror = () => resolve({ w: 0, h: 0 });
+    i.src = dataUrl;
   });
 }
 
@@ -1422,7 +1502,7 @@ async function migrateInlineMedia(chatId, items) {
       // а обратный порядок мог бы потерять файл насовсем.
       await db.ref('chats/' + chatId + '/media/' + m.id).set(m.dataUrl);
       await db.ref('chats/' + chatId + '/messages/' + m.id).update({ dataUrl: null, hasMedia: true });
-      mediaCache.set(chatId + '/' + m.id, m.dataUrl);
+      mediaCache.set('chats/' + chatId + '/media/' + m.id, m.dataUrl);
     } catch (e) {
       console.warn('не удалось перенести вложение', m.id, e);
       migratedChats.delete(chatId);   // разрешаем повтор при следующем открытии
@@ -1437,13 +1517,14 @@ async function migrateInlineMedia(chatId, items) {
 // Кэш держим в памяти: повторное нажатие на то же голосовое не идёт в сеть.
 const mediaCache = new Map();
 
-async function loadMedia(chatId, msgId) {
-  const key = chatId + '/' + msgId;
-  if (mediaCache.has(key)) return mediaCache.get(key);
-  const snap = await db.ref('chats/' + chatId + '/media/' + msgId).get();
+// Путь задаётся элементом, поэтому одна функция обслуживает и переписку
+// (chats/<id>/media/<msgId>), и публикации (postMedia/<postId>).
+async function loadMediaAt(path) {
+  if (mediaCache.has(path)) return mediaCache.get(path);
+  const snap = await db.ref(path).get();
   const url = snap.val();
-  if (!url) throw new Error('медиа не найдено');
-  mediaCache.set(key, url);
+  if (!url) throw new Error('медиа не найдено: ' + path);
+  mediaCache.set(path, url);
   return url;
 }
 
@@ -1453,11 +1534,13 @@ function inlineMedia(el) {
   return u && u !== 'undefined' ? u : null;
 }
 
-// Достаёт содержимое для элемента: сперва встроенное, иначе из узла media.
+// Достаёт содержимое для элемента: сперва встроенное, иначе по пути из data-path.
 async function mediaFor(el) {
   const inline = inlineMedia(el);
   if (inline) return inline;
-  return loadMedia(currentChatId, el.dataset.msg);
+  const path = el.dataset.path;
+  if (!path) throw new Error('у элемента нет data-path');
+  return loadMediaAt(path);
 }
 
 function renderBubble(m, mine) {
@@ -1466,7 +1549,7 @@ function renderBubble(m, mine) {
   // data-msg — ключ сообщения, по нему подтягивается файл из узла media.
   // data-url заполняется только у старых сообщений, где файл лежит внутри самого
   // сообщения: их надо продолжать показывать без обращения к media.
-  const ref = `data-msg="${m.id}"${m.dataUrl ? ` data-url="${m.dataUrl}"` : ''}`;
+  const ref = `data-msg="${m.id}" data-path="chats/${currentChatId}/media/${m.id}"${m.dataUrl ? ` data-url="${m.dataUrl}"` : ''}`;
 
   if (m.type === 'voice') {
     const bars = Array.from({ length: 18 }, () => Math.round(6 + Math.random() * 16)).map((h) => `<span style="height:${h}px"></span>`).join('');
@@ -1484,6 +1567,20 @@ function renderBubble(m, mine) {
         <div class="play-badge">${ico('play', 34)}</div>
       </div>${time}</div>`;
   }
+  if (m.type === 'image' || m.type === 'clip') {
+    // Соотношение сторон задаём заранее — иначе лента дёргается,
+    // когда превью подгрузится и пузырь вдруг изменит высоту.
+    const ratio = (m.w && m.h) ? (m.h / m.w) : 0.75;
+    const badge = m.type === 'clip'
+      ? `<div class="media-badge">${ico('play', 22)}${m.duration ? `<span>${fmtDur(m.duration)}</span>` : ''}</div>`
+      : '';
+    return `<div class="bubble media-bubble" style="padding:0;overflow:hidden;">
+      <div class="media-thumb" ${ref} data-kind="${m.type}" data-name="${escapeHtml(m.fileName || '')}"
+           style="padding-bottom:${Math.min(Math.max(ratio, 0.5), 1.5) * 100}%">
+        ${m.thumb ? `<img src="${m.thumb}" alt="">` : ''}
+        ${badge}
+      </div>${time}</div>`;
+  }
   if (m.type === 'file') {
     return `<div class="bubble"><button class="file-card" ${ref} data-name="${escapeHtml(m.fileName)}">
       <div class="file-ico">${ico('file', 17)}</div>
@@ -1495,6 +1592,46 @@ function renderBubble(m, mine) {
   if (legacy) return `<div class="bubble" style="opacity:.65;font-style:italic;">${legacy} — из старой версии${time}</div>`;
   return `<div class="bubble" style="opacity:.65;font-style:italic;">сообщение не поддерживается${time}</div>`;
 }
+
+/* ---------- ПОЛНОЭКРАННЫЙ ПРОСМОТР ---------- */
+let viewerUrl = null, viewerName = '';
+
+function closeViewer() {
+  const v = $('#viewer');
+  v.classList.remove('open');
+  $('#viewer-body').innerHTML = '';   // снимаем video, иначе он продолжит играть в фоне
+  viewerUrl = null;
+}
+
+async function openViewer(el) {
+  const kind = el.dataset.kind;
+  viewerName = el.dataset.name || '';
+  el.classList.add('busy');
+  let url;
+  try { url = await mediaFor(el); }
+  catch (e) { toast('Не удалось загрузить'); return; }
+  finally { el.classList.remove('busy'); }
+
+  viewerUrl = url;
+  $('#viewer-name').textContent = viewerName;
+  $('#viewer-body').innerHTML = kind === 'clip'
+    ? `<video src="${url}" controls autoplay playsinline></video>`
+    : `<img src="${url}" alt="">`;
+  $('#viewer').classList.add('open');
+}
+
+$('#viewer-close').innerHTML = ico('close', 18);
+$('#viewer-save').innerHTML = ico('file', 18);
+$('#viewer-close').onclick = closeViewer;
+$('#viewer').onclick = (e) => { if (e.target.id === 'viewer') closeViewer(); };
+$('#viewer-save').onclick = () => {
+  if (!viewerUrl) return;
+  const a = document.createElement('a');
+  a.href = viewerUrl; a.download = viewerName || 'file';
+  document.body.appendChild(a); a.click(); a.remove();
+};
+// Аппаратная кнопка «назад» должна закрывать просмотр, а не выкидывать из чата.
+window.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeViewer(); });
 
 function wireBubbleEvents(box) {
   box.querySelectorAll('.voice-play').forEach((btn) => {
@@ -1531,6 +1668,10 @@ function wireBubbleEvents(box) {
     };
   });
 
+  box.querySelectorAll('.media-thumb').forEach((el) => {
+    el.onclick = () => openViewer(el);
+  });
+
   box.querySelectorAll('.file-card').forEach((card) => {
     card.onclick = async () => {
       const info = card.querySelector('.file-size');
@@ -1551,13 +1692,24 @@ function wireBubbleEvents(box) {
 /* ---------- 18. ОТПРАВКА СООБЩЕНИЙ ---------- */
 async function pushMessage(payload) {
   if (!currentChatId) return;
-  const preview = { text: payload.text, voice: 'голосовое сообщение 🎙', video: 'видео-кружок ⭕', file: 'файл: ' + (payload.fileName || '') }[payload.type] || '';
+  const preview = {
+    text: payload.text,
+    voice: 'голосовое сообщение 🎙',
+    video: 'видео-кружок ⭕',
+    image: 'фотография 🖼',
+    clip: 'видео 🎬',
+    file: 'файл: ' + (payload.fileName || ''),
+  }[payload.type] || 'вложение';
   const chatAtSend = currentChatId;
   const ref = db.ref('chats/' + chatAtSend + '/messages').push();
   // Тяжёлое содержимое НЕ кладём в сообщение: узел messages читается целиком
   // при каждом открытии чата, и один файл на пол-мегабайта тормозит всю переписку.
   const { dataUrl, ...meta } = payload;
   if (dataUrl) {
+    if (dataUrl.length > MAX_MEDIA_CHARS) {
+      toast('Запись слишком длинная — попробуйте покороче');
+      throw new Error('вложение превышает лимит: ' + dataUrl.length + ' символов');
+    }
     // Сначала медиа, потом сообщение. Обратный порядок дал бы пузырь,
     // указывающий на ещё не существующий файл.
     await db.ref('chats/' + chatAtSend + '/media/' + ref.key).set(dataUrl);
@@ -1605,11 +1757,28 @@ $('#file-input').addEventListener('change', async (e) => {
   if (!file) return;
   hide($('#attach-panel'));
   if (file.size > MAX_ATTACHMENT_BYTES) { toast('Файл больше 5 МБ — бесплатное хранилище такое не потянет'); e.target.value = ''; return; }
-  toast('Отправка файла…');
+
+  const mime = file.type || '';
   try {
-    const dataUrl = await blobToDataUrl(file);
-    await pushMessage({ type: 'file', dataUrl, fileName: file.name, fileSize: file.size });
-  } catch (err) { toast('Не удалось отправить файл'); console.error(err); }
+    if (mime.startsWith('image/')) {
+      toast('Отправка фото…');
+      // Полную версию тоже пережимаем: с телефона прилетают снимки на 12 мегапикселей,
+      // а в переписке разницы не видно.
+      const full = await compressImageFile(file, 1400, 0.82);
+      const thumb = await compressImageFile(file, THUMB_SIZE, THUMB_Q);
+      const { w, h } = await imageSize(full);
+      await pushMessage({ type: 'image', dataUrl: full, thumb, w, h, fileName: file.name });
+    } else if (mime.startsWith('video/')) {
+      toast('Отправка видео…');
+      const { thumb, w, h, duration } = await videoThumbnail(file);
+      const dataUrl = await blobToDataUrl(file);
+      await pushMessage({ type: 'clip', dataUrl, thumb, w, h, duration, fileName: file.name, fileSize: file.size });
+    } else {
+      toast('Отправка файла…');
+      const dataUrl = await blobToDataUrl(file);
+      await pushMessage({ type: 'file', dataUrl, fileName: file.name, fileSize: file.size });
+    }
+  } catch (err) { toast('Не удалось отправить'); console.error(err); }
   e.target.value = '';
 });
 
@@ -1710,6 +1879,24 @@ async function onVideoRecorded() {
   } catch (err) { toast('Не удалось отправить'); console.error(err); }
 }
 
+// Медиа в карточке поста: показываем миниатюру, полный файл тянем по нажатию.
+// Старые посты держат картинку прямо в себе (imageDataUrl) — их поддерживаем как есть.
+function postMediaMarkup(p) {
+  if (p.imageDataUrl) {
+    return `<img class="post-image media-thumb-inline" data-kind="image" data-url="${p.imageDataUrl}" src="${p.imageDataUrl}">`;
+  }
+  if (!p.thumb) return '';
+  const ratio = (p.w && p.h) ? (p.h / p.w) : 0.66;
+  const badge = p.mediaType === 'clip'
+    ? `<div class="media-badge">${ico('play', 26)}${p.duration ? `<span>${fmtDur(p.duration)}</span>` : ''}</div>`
+    : '';
+  return `<div class="media-thumb post-media" data-kind="${p.mediaType || 'image'}"
+       data-path="postMedia/${p.id}" data-name="${p.mediaType === 'clip' ? 'video' : 'image'}"
+       style="padding-bottom:${Math.min(Math.max(ratio, 0.4), 1.4) * 100}%">
+    <img src="${p.thumb}" alt="">${badge}
+  </div>`;
+}
+
 /* ---------- 22. ЛЕНТА ПУБЛИКАЦИЙ ---------- */
 let feedRef = null, feedHandler = null;
 function listenFeed() {
@@ -1736,24 +1923,31 @@ function listenFeed() {
       return `<div class="post-card" data-post="${p.id}" data-author="${p.author}">
         <div class="post-head"><img src="${avatarSrc(author)}"><div><div class="p-name">${escapeHtml(author.username)}</div><div class="p-time">${fmtPostTime(p.ts)}</div></div></div>
         ${p.text ? `<div class="post-text">${escapeHtml(p.text)}</div>` : ''}
-        ${p.imageDataUrl ? `<img class="post-image" src="${p.imageDataUrl}">` : ''}
+        ${postMediaMarkup(p)}
         ${p.author === currentUser.uid ? `<div class="post-actions"><button class="post-delete">${ico('trash', 14)} удалить</button></div>` : ''}
       </div>`;
     }).join('');
+    body.querySelectorAll('.post-media').forEach((el) => { el.onclick = () => openViewer(el); });
+    body.querySelectorAll('.media-thumb-inline').forEach((el) => { el.onclick = () => openViewer(el); });
+
     body.querySelectorAll('.post-delete').forEach((btn) => {
       btn.onclick = async () => {
         const card = btn.closest('.post-card');
         const ok = await askConfirm('Удалить публикацию?', 'Это действие нельзя отменить.');
         if (!ok) return;
-        await db.ref('posts/' + card.dataset.post).remove();
+        const id = card.dataset.post;
+        // Сначала сам пост: если сорвётся удаление медиа, останется осиротевший
+        // файл — это лучше, чем карточка, ссылающаяся в пустоту.
+        await db.ref('posts/' + id).remove();
+        try { await db.ref('postMedia/' + id).remove(); } catch (e) { console.warn('медиа поста не удалено', e); }
       };
     });
   });
 }
 
-let postImageDataUrl = null;
+let postMedia = null;   // { kind, full, thumb, w, h, duration }
 $('#new-post-btn').onclick = () => {
-  $('#post-text').value = ''; postImageDataUrl = null;
+  $('#post-text').value = ''; postMedia = null;
   hide($('#post-image-preview')); $('#post-error').textContent = '';
   show($('#post-modal'));
 };
@@ -1761,21 +1955,43 @@ $('#close-post-modal').onclick = () => hide($('#post-modal'));
 $('#post-image-input').addEventListener('change', async (e) => {
   const file = e.target.files[0];
   if (!file) return;
+  if (file.size > MAX_ATTACHMENT_BYTES) { $('#post-error').textContent = 'Файл больше 5 МБ'; e.target.value = ''; return; }
+  const mime = file.type || '';
   try {
-    postImageDataUrl = await compressImageFile(file, 900, 0.68);
-    $('#post-image-preview-img').src = postImageDataUrl;
+    if (mime.startsWith('video/')) {
+      const { thumb, w, h, duration } = await videoThumbnail(file);
+      postMedia = { kind: 'clip', full: await blobToDataUrl(file), thumb, w, h, duration };
+      $('#post-image-preview-img').src = thumb;
+    } else {
+      const full = await compressImageFile(file, 900, 0.68);
+      const thumb = await compressImageFile(file, THUMB_SIZE, THUMB_Q);
+      const { w, h } = await imageSize(full);
+      postMedia = { kind: 'image', full, thumb, w, h };
+      $('#post-image-preview-img').src = thumb;
+    }
     show($('#post-image-preview'));
-  } catch (err) { toast('Не удалось прикрепить фото'); }
+  } catch (err) { $('#post-error').textContent = 'Не удалось прочитать файл'; console.error(err); }
   e.target.value = '';
 });
-$('#post-image-remove').onclick = () => { postImageDataUrl = null; hide($('#post-image-preview')); };
+$('#post-image-remove').onclick = () => { postMedia = null; hide($('#post-image-preview')); };
 $('#publish-post-btn').onclick = async () => {
   const text = $('#post-text').value.trim();
   if (!text && !postImageDataUrl) { $('#post-error').textContent = 'Напишите что-нибудь или добавьте фото'; return; }
   try {
+    const ref = db.ref('posts').push();
     const payload = { author: currentUser.uid, ts: firebase.database.ServerValue.TIMESTAMP, text };
-    if (postImageDataUrl) payload.imageDataUrl = postImageDataUrl;
-    await db.ref('posts').push(payload);
+    if (postMedia) {
+      // Тяжёлое содержимое — в отдельный узел, как и в переписке: лента читает
+      // все 80 постов разом, и картинки внутри них тормозили бы вкладку.
+      if (postMedia.full.length > MAX_MEDIA_CHARS) { $('#post-error').textContent = 'Файл слишком тяжёлый'; return; }
+      await db.ref('postMedia/' + ref.key).set(postMedia.full);
+      Object.assign(payload, {
+        mediaType: postMedia.kind, thumb: postMedia.thumb,
+        w: postMedia.w || 0, h: postMedia.h || 0,
+      });
+      if (postMedia.duration) payload.duration = postMedia.duration;
+    }
+    await ref.set(payload);
     hide($('#post-modal'));
   } catch (e) { $('#post-error').textContent = 'Не удалось опубликовать: ' + (e.code || e.message); }
 };
@@ -1879,5 +2095,13 @@ if ('serviceWorker' in navigator) {
   });
 }
 </script>
+  <div id="viewer">
+    <div class="viewer-bar">
+      <button id="viewer-close" aria-label="Закрыть"></button>
+      <div class="viewer-name" id="viewer-name"></div>
+      <button id="viewer-save" aria-label="Сохранить"></button>
+    </div>
+    <div id="viewer-body"></div>
+  </div>
 </body>
 </html>
