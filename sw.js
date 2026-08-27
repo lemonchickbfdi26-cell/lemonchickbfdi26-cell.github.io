@@ -1,6 +1,6 @@
 // Кэширует оболочку приложения, чтобы при повторном открытии оно грузилось мгновенно.
 // Версию кэша поднимай при каждом обновлении файлов — иначе браузер отдаст старое.
-const CACHE = 'paper-mail-v9';
+const CACHE = 'paper-mail-v12';
 
 // Пути ОТНОСИТЕЛЬНЫЕ, без ведущего слеша. Так приложение работает и в корне домена
 // (github.io), и в подпапке (локальный сервер) — абсолютный путь ушёл бы в корень
@@ -31,6 +31,8 @@ const SHELL = [
   './assets/img/bg_settings.webp',
   './assets/img/bg_account.webp',
   './assets/video/splash-poster.webp',
+  './assets/video/splash-short-poster.webp',
+  './assets/video/splash-short.mp4',
 ];
 
 // Куда установлен sw.js — от этого адреса и считаются все относительные пути.

@@ -74,12 +74,12 @@ input,textarea{user-select:text; -webkit-user-select:text;}
 }
 
 /* ================= СПЛЭШ ================= */
-#splash{ z-index:500; background:#171310; align-items:center; justify-content:center; overflow:hidden; }
+#splash{ z-index:500; background:#f4efe4; align-items:center; justify-content:center; overflow:hidden; }
 /* Видео и постер лежат друг на друге: пока видео не заиграло, виден постер (атрибут poster).
    Если файла видео нет вовсе — постер так и остаётся на экране, заставка не ломается. */
 #splash-video{
   position:absolute; inset:0; width:100%; height:100%;
-  object-fit:cover; background:#171310;
+  object-fit:cover; background:#f4efe4;
 }
 /* Затемнение снизу — чтобы название читалось поверх любой картинки. */
 #splash::after{
@@ -93,7 +93,7 @@ input,textarea{user-select:text; -webkit-user-select:text;}
 }
 .splash-hint{
   position:absolute; bottom:6%; z-index:2; color:rgba(247,242,231,.55); font-size:12px;
-  opacity:0; animation: fadeUp .5s ease 2.2s forwards;
+  opacity:0; animation: fadeUp .5s ease 1.5s forwards;
 }
 @keyframes fadeUp{ from{opacity:0; transform:translateY(14px);} to{opacity:1; transform:translateY(0);} }
 #splash.leaving{ transition:opacity .55s ease; opacity:0; pointer-events:none; }
@@ -113,7 +113,12 @@ input,textarea{user-select:text; -webkit-user-select:text;}
 
 /* ================= AUTH ================= */
 #auth-screen{ align-items:stretch; justify-content:center; padding:32px 24px calc(28px + var(--safe-bottom)); gap:18px; overflow-y:auto; }
-.auth-card{ margin-top:auto; margin-bottom:auto; }
+.auth-card{
+  margin-top:auto; margin-bottom:auto;
+  background:rgba(247,242,231,.88); border-radius:18px; padding:22px 18px;
+  box-shadow:0 8px 28px rgba(47,42,34,.18);
+  backdrop-filter:blur(3px); -webkit-backdrop-filter:blur(3px);
+}
 .brand-mark{ text-align:center; margin-bottom:6px; }
 .brand-mark h1{ font-family:var(--serif); font-size:44px; margin:0; color:var(--accent); line-height:1.15; }
 .brand-mark p{ margin:2px 0 0; color:var(--ink-soft); font-size:13px; }
@@ -232,7 +237,7 @@ input,textarea{user-select:text; -webkit-user-select:text;}
 #chatlist-body{ flex:1; overflow-y:auto; -webkit-overflow-scrolling:touch; padding-bottom:10px; }
 .chat-row{
   display:flex; align-items:center; gap:12px; padding:12px 16px; cursor:pointer;
-  border-bottom:1px solid var(--line); background:var(--paper);
+  border-bottom:1px solid var(--line); background:rgba(247,242,231,.80);
 }
 .chat-row:active{ background:var(--paper-dark); }
 .chat-avatar{ width:50px; height:50px; border-radius:50%; background:#fffdf8; box-shadow:var(--shadow-soft); flex-shrink:0; display:flex; align-items:center; justify-content:center; overflow:hidden; }
@@ -402,11 +407,7 @@ input,textarea{user-select:text; -webkit-user-select:text;}
 
     <!-- ===== SPLASH ===== -->
     <div id="splash" class="screen">
-      <video id="splash-video" playsinline muted autoplay preload="auto"
-             poster="./assets/video/splash-poster.webp">
-        <source src="./assets/video/splash.mp4" type="video/mp4">
-        <source src="./assets/video/splash.webm" type="video/webm">
-      </video>
+      <video id="splash-video" playsinline muted preload="auto"></video>
       <div class="splash-title">Бумажная почта</div>
       <div class="splash-hint">нажмите, чтобы пропустить</div>
     </div>
@@ -850,18 +851,57 @@ function askConfirm(title, text) {
   });
 }
 
+/* ---------- 3b. ФИКСАЦИЯ ОРИЕНТАЦИИ ---------- */
+// При повороте Android пересоздаёт активность TWA, та заново проверяет
+// assetlinks.json — и на время проверки показывает адресную строку Chrome.
+// Проще не поворачиваться вовсе. Работает только в установленном приложении;
+// в обычной вкладке браузер откажет, и это нормально.
+async function lockPortrait() {
+  try {
+    if (screen.orientation && screen.orientation.lock) {
+      await screen.orientation.lock('portrait');
+    }
+  } catch (e) { /* вне standalone блокировка запрещена — молча пропускаем */ }
+}
+lockPortrait();
+// Если система всё же повернула экран, пробуем вернуть блокировку.
+window.addEventListener('orientationchange', () => setTimeout(lockPortrait, 100));
+
 /* ---------- 4. СПЛЭШ ---------- */
-const SPLASH_MIN_MS = 1600;   // не мигать, даже если всё загрузилось мгновенно
-const SPLASH_MAX_MS = 6000;   // страховка: видео не загрузилось или зависло
+// Полный ролик (8.5с) показываем только тогда, когда он уместен: при самом первом
+// запуске и пока у человека нет аккаунта. Тому, кто заходит каждый день, достаточно
+// короткой версии (2.7с) — иначе красивая заставка превращается в задержку.
+const SPLASH_FULL  = { src: './assets/video/splash.mp4',       poster: './assets/video/splash-poster.webp',       max: 10000 };
+const SPLASH_SHORT = { src: './assets/video/splash-short.mp4', poster: './assets/video/splash-short-poster.webp', max: 4500 };
+const SPLASH_MIN_MS = 1200;   // не мигать, даже если всё загрузилось мгновенно
+const INTRO_SEEN_KEY = 'splash_intro_seen';
+
+// Firebase compat держит вошедшего пользователя в localStorage под ключом
+// firebase:authUser:<apiKey>:[DEFAULT]. Читаем синхронно: ждать onAuthStateChanged
+// нельзя, ролик надо выбрать до первого кадра.
+function hasStoredAccount() {
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      if ((localStorage.key(i) || '').startsWith('firebase:authUser:')) return true;
+    }
+  } catch (e) { /* приватный режим — считаем, что аккаунта нет */ }
+  return false;
+}
+
 window.addEventListener('load', () => {
   const splash = $('#splash');
   const video = $('#splash-video');
   const shownAt = Date.now();
   let finished = false;
 
+  let introSeen = false;
+  try { introSeen = localStorage.getItem(INTRO_SEEN_KEY) === '1'; } catch (e) {}
+  const plan = (!introSeen || !hasStoredAccount()) ? SPLASH_FULL : SPLASH_SHORT;
+
   function finish() {
     if (finished) return;
     finished = true;
+    try { localStorage.setItem(INTRO_SEEN_KEY, '1'); } catch (e) {}
     const wait = Math.max(0, SPLASH_MIN_MS - (Date.now() - shownAt));
     setTimeout(() => {
       splash.classList.add('leaving');
@@ -870,29 +910,32 @@ window.addEventListener('load', () => {
   }
 
   if (video) {
+    video.poster = plan.poster;
+    video.src = plan.src;
     video.addEventListener('ended', finish);
-    // Нет файла, битый кодек, отвалилась сеть — уходим по общему таймауту,
+    // Нет файла, битый кодек, отвалилась сеть — уходим по таймауту,
     // а на экране в это время виден постер.
     video.addEventListener('error', () => setTimeout(finish, 900), true);
+    video.load();
     // Автозапуск на мобильных разрешён только для muted+playsinline, но браузер
-    // всё равно может отказать: тогда просто ждём таймаут с постером на экране.
+    // всё равно может отказать: тогда ждём таймаут с постером на экране.
     const attempt = video.play();
     if (attempt && attempt.catch) attempt.catch(() => {});
   }
 
   splash.addEventListener('click', finish);
-  setTimeout(finish, SPLASH_MAX_MS);
+  setTimeout(finish, plan.max);
 });
 
 /* ---------- 4b. ФОНЫ ЭКРАНОВ ---------- */
 // Насыщенность бумажной вуали поверх каждой картинки: 0 — картинка как есть,
 // 1 — сплошная бумага. Подбирается на глаз под конкретную обоину.
 const SCREEN_BG_TINT = {
-  bg_auth: 0.35,
-  bg_chats: 0.62,
-  bg_feed: 0.62,
-  bg_settings: 0.58,
-  bg_account: 0.5,
+  bg_auth: 0.18,      // карточка входа получила свою подложку, картинку можно не гасить
+  bg_chats: 0.28,     // строки чатов полупрозрачные, картинка просвечивает сквозь них
+  bg_feed: 0.06,      // карточки постов светлые и непрозрачные — тёмная сцена работает задником
+  bg_settings: 0.22,  // блоки настроек тоже со своим фоном
+  bg_account: 0.22,
 };
 
 function mountScreenBackgrounds() {
