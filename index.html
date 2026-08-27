@@ -703,6 +703,15 @@ button.file-card{
     </div>
 
     <!-- ===== MODAL: подтверждение ===== -->
+    <div id="viewer">
+      <div class="viewer-bar">
+        <button id="viewer-close" aria-label="Закрыть"></button>
+        <div class="viewer-name" id="viewer-name"></div>
+        <button id="viewer-save" aria-label="Сохранить"></button>
+      </div>
+      <div id="viewer-body"></div>
+    </div>
+
     <div id="confirm-modal" class="modal-backdrop hidden">
       <div class="modal-sheet">
         <h3 id="confirm-title">Вы уверены?</h3>
@@ -2095,13 +2104,5 @@ if ('serviceWorker' in navigator) {
   });
 }
 </script>
-  <div id="viewer">
-    <div class="viewer-bar">
-      <button id="viewer-close" aria-label="Закрыть"></button>
-      <div class="viewer-name" id="viewer-name"></div>
-      <button id="viewer-save" aria-label="Сохранить"></button>
-    </div>
-    <div id="viewer-body"></div>
-  </div>
 </body>
 </html>
