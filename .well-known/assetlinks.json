@@ -1,0 +1,8 @@
+[{
+      "relation": ["delegate_permission/common.handle_all_urls"],
+      "target": {
+        "namespace": "android_app",
+        "package_name": "io.github.lemonchickbfdi26_cell.twa",
+        "sha256_cert_fingerprints": ["17:AC:F5:5E:43:06:91:C6:B5:46:6B:8E:5E:4C:D9:6B:7E:E6:70:2B:74:62:82:E4:8A:84:7C:12:C4:80:D7:D4"]
+      }
+    }]
