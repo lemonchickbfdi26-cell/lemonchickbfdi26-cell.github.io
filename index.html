@@ -1428,7 +1428,7 @@ function listenChatList() {
         <div class="chat-avatar"><img src="${avatar}"></div>
         <div class="chat-meta">
           <div class="name">${escapeHtml(name)}${support ? ' <span class="support-tag">служебный</span>' : ''}</div>
-          <div class="preview">${escapeHtml(c.lastPreview || 'Начните разговор')}</div>
+          <div class="preview">${escapeHtml(c.lastPreview || (support ? 'Напишите об ошибке или предложите идею' : 'Начните разговор'))}</div>
         </div>
         <div class="chat-time">${c.updatedAt ? fmtTime(c.updatedAt) : ''}</div>
       </div>`;
@@ -1495,20 +1495,19 @@ async function ensureSupportChat() {
   if (!currentUser || currentUser.uid === SUPPORT_UID) return;   // владельцу чат с самим собой не нужен
   const cid = supportChatId(currentUser.uid);
   try {
-    const metaSnap = await db.ref('chats/' + cid + '/meta').get();
-    if (!metaSnap.exists()) {
-      await db.ref('chats/' + cid + '/meta').set({
-        members: { [currentUser.uid]: true, [SUPPORT_UID]: true },
-        kind: 'support',
-        createdAt: firebase.database.ServerValue.TIMESTAMP,
-        lastPreview: 'Напишите нам об ошибке или предложите идею',
-      });
-    } else if (metaSnap.val().kind !== 'support') {
-      await db.ref('chats/' + cid + '/meta').update({ kind: 'support' });
-    }
+    // Читать чат перед записью нельзя: правило чтения требует состоять в members,
+    // а у несуществующего чата участников нет — проверка существования сама
+    // упирается в права, которых ещё нет. Поэтому пишем сразу.
+    // update, а не set: у уже существующей переписки не должны пропасть
+    // lastPreview и lastUpdatedAt.
+    await db.ref('chats/' + cid + '/meta').update({
+      members: { [currentUser.uid]: true, [SUPPORT_UID]: true },
+      kind: 'support',
+    });
     await db.ref('userChats/' + currentUser.uid + '/' + cid).set(true);
   } catch (e) {
-    console.warn('чат поддержки не создан', e);
+    // Ошибки Firebase не выводятся через console.warn осмысленно — достаём код руками.
+    console.warn('чат поддержки не создан:', e.code || e.message || e);
     toast('Поддержка недоступна: ' + (e.code || e.message));
   }
 }
