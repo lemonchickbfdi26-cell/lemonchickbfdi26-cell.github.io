@@ -876,16 +876,19 @@ const SPLASH_SHORT = { src: './assets/video/splash-short.mp4', poster: './assets
 const SPLASH_MIN_MS = 1200;   // не мигать, даже если всё загрузилось мгновенно
 const INTRO_SEEN_KEY = 'splash_intro_seen';
 
-// Firebase compat держит вошедшего пользователя в localStorage под ключом
-// firebase:authUser:<apiKey>:[DEFAULT]. Читаем синхронно: ждать onAuthStateChanged
-// нельзя, ролик надо выбрать до первого кадра.
+// Начиная с 9-й версии Firebase Auth хранит сессию в IndexedDB, а не в localStorage,
+// и прочитать её синхронно нельзя. Ждать onAuthStateChanged тоже нельзя: ролик
+// выбирается до первого кадра. Поэтому ведём собственный флаг — его выставляет
+// обработчик авторизации и снимает выход из аккаунта.
+const HAS_ACCOUNT_KEY = 'has_account';
 function hasStoredAccount() {
+  try { return localStorage.getItem(HAS_ACCOUNT_KEY) === '1'; } catch (e) { return false; }
+}
+function markAccount(present) {
   try {
-    for (let i = 0; i < localStorage.length; i++) {
-      if ((localStorage.key(i) || '').startsWith('firebase:authUser:')) return true;
-    }
-  } catch (e) { /* приватный режим — считаем, что аккаунта нет */ }
-  return false;
+    if (present) localStorage.setItem(HAS_ACCOUNT_KEY, '1');
+    else localStorage.removeItem(HAS_ACCOUNT_KEY);
+  } catch (e) {}
 }
 
 window.addEventListener('load', () => {
@@ -1071,6 +1074,7 @@ function translateAuthError(e) {
 
 let selfWatchRef = null, selfWatchHandler = null;
 auth.onAuthStateChanged(async (user) => {
+  markAccount(!!user);   // от этого зависит, какую заставку показать в следующий раз
   if (user) {
     let snap;
     try { snap = await db.ref('users/' + user.uid).get(); } catch (e) { toast(translateAuthError(e)); auth.signOut(); return; }
