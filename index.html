@@ -1725,12 +1725,16 @@ function listenMessages(chatId) {
       el.className = 'msg-row' + (mine ? ' mine' : '');
       el.dataset.msg = m.id;
       el.innerHTML = renderBubble(m, mine);
-      // Удалять даём только свои сообщения: чужие в личной переписке
-      // трогать нельзя, даже находясь в этом же чате.
-      if (mine && !adminViewMode) {
-        onLongPress(el, () => msgSelectionToggle(m.id));
+      if (!adminViewMode) {
+        // Долгое нажатие открывает меню действий. Ответить можно на любое
+        // сообщение, изменить и удалить — только своё; решает openMsgActions.
+        onLongPress(el, () => {
+          if (msgSelection.size) { if (mine) msgSelectionToggle(m.id); return; }
+          openMsgActions(m, mine);
+        });
         el.addEventListener('click', (ev) => {
           if (!msgSelection.size) return;      // вне режима выделения клик работает как обычно
+          if (!mine) return;                    // чужие сообщения в выделение не попадают
           ev.preventDefault(); ev.stopPropagation();
           msgSelectionToggle(m.id);
         }, true);
@@ -2168,6 +2172,7 @@ async function openViewer(el) {
   $('#viewer').classList.add('open');
 }
 
+$('#cc-cancel').innerHTML = ico('close', 16);
 $('#msg-select-cancel').innerHTML = ico('close', 18);
 $('#msg-select-delete').innerHTML = ico('trash', 18);
 $('#chat-select-cancel').innerHTML = ico('close', 18);
@@ -2218,6 +2223,10 @@ function wireBubbleEvents(box) {
       if (v.paused) { v.play(); badge.style.display = 'none'; v.muted = false; }
       else { v.pause(); badge.style.display = 'flex'; }
     };
+  });
+
+  box.querySelectorAll('.reply-quote').forEach((q) => {
+    q.onclick = (e) => { e.stopPropagation(); jumpToMessage(q.dataset.jump); };
   });
 
   box.querySelectorAll('.media-thumb').forEach((el) => {
