@@ -135,6 +135,68 @@ input,textarea{user-select:text; -webkit-user-select:text;}
 .support-item .s-preview{ font-size:12.5px; color:var(--ink-soft); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .support-item .s-time{ font-family:var(--mono); font-size:10.5px; color:var(--ink-soft); flex-shrink:0; }
 
+/* Карточка профиля */
+.profile-sheet{ text-align:center; }
+.profile-avatar{
+  width:96px; height:96px; margin:4px auto 12px; border-radius:50%;
+  overflow:hidden; background:var(--paper-dark); box-shadow:var(--shadow);
+}
+.profile-avatar img{ width:100%; height:100%; object-fit:cover; display:block; }
+#profile-name{ margin:0 0 2px; }
+.profile-status{ font-size:12.5px; color:var(--ink-soft); margin-bottom:12px; }
+.profile-status.online{ color:#3f8f57; }
+/* Описание в собственной рамке: без неё пустое био выглядит как ошибка вёрстки */
+.profile-bio{
+  font-size:14px; line-height:1.45; color:var(--ink); text-align:left;
+  background:rgba(47,42,34,.05); border-radius:10px; padding:11px 12px;
+  margin-bottom:12px; white-space:pre-wrap; word-break:break-word;
+}
+.profile-bio.empty{ color:var(--ink-soft); font-style:italic; text-align:center; }
+.profile-meta{
+  font-family:var(--mono); font-size:11px; color:var(--ink-soft);
+  margin-bottom:14px; letter-spacing:-.2px;
+}
+.profile-badge{
+  display:inline-block; font-family:var(--mono); font-size:9.5px; text-transform:uppercase;
+  letter-spacing:.4px; color:var(--stamp); background:var(--stamp-soft);
+  padding:2px 6px; border-radius:4px; margin-left:6px; vertical-align:middle;
+}
+/* Аватарка в списке чатов — отдельная зона нажатия, поэтому обозначаем это */
+.chat-avatar{ cursor:pointer; }
+.chat-header-name, #peer-avatar{ cursor:pointer; }
+
+/* Панель над полем ввода: ответ или изменение.
+   Вертикальная полоска слева — тот же приём, что в цитате внутри пузыря,
+   чтобы связь между ними читалась без объяснений. */
+#compose-context{
+  display:flex; align-items:center; gap:10px; padding:8px 12px;
+  background:var(--paper-dark); border-top:1px solid var(--line);
+}
+.cc-stripe{ width:3px; align-self:stretch; background:var(--accent); border-radius:2px; flex-shrink:0; }
+.cc-body{ flex:1; min-width:0; }
+.cc-title{ font-size:12px; font-weight:600; color:var(--accent); }
+.cc-text{ font-size:12.5px; color:var(--ink-soft); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+/* Цитата внутри пузыря */
+.reply-quote{
+  display:block; border-left:3px solid var(--accent); padding:3px 0 3px 7px;
+  margin-bottom:5px; cursor:pointer; opacity:.85;
+}
+.msg-row.mine .reply-quote{ border-left-color:var(--accent-deep); }
+.reply-quote .rq-name{ font-size:11.5px; font-weight:600; color:var(--accent); }
+.reply-quote .rq-text{ font-size:12px; color:var(--ink-soft); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.bubble .edited{ opacity:.7; font-style:italic; }
+/* Подсветка сообщения, к которому перешли по цитате */
+@keyframes flash{ 0%,100%{ background:transparent; } 30%{ background:rgba(184,66,42,.22); } }
+.msg-row.flash{ animation: flash 1.1s ease; border-radius:12px; }
+
+.msg-actions-preview{
+  font-size:13px; color:var(--ink-soft); padding:8px 10px; margin-bottom:12px;
+  background:rgba(47,42,34,.06); border-radius:9px;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.btn.ghost.small.danger{ color:var(--danger); border-color:var(--danger); }
+
 /* Режим выделения. Панель перекрывает шапку, а не сдвигает её:
    так ничего не прыгает при входе и выходе из режима. */
 .select-bar{
@@ -697,6 +759,15 @@ button.file-card{
         </div>
       </div>
 
+      <div id="compose-context" class="hidden">
+        <div class="cc-stripe"></div>
+        <div class="cc-body">
+          <div class="cc-title" id="cc-title">Ответ</div>
+          <div class="cc-text" id="cc-text"></div>
+        </div>
+        <button class="icon-btn" id="cc-cancel"></button>
+      </div>
+
       <div id="composer">
         <button class="composer-btn secondary" id="attach-toggle"></button>
         <textarea id="msg-input" placeholder="Написать письмо…" rows="1"></textarea>
@@ -772,6 +843,29 @@ button.file-card{
         <button id="viewer-save" aria-label="Сохранить"></button>
       </div>
       <div id="viewer-body"></div>
+    </div>
+
+    <div id="profile-modal" class="modal-backdrop hidden">
+      <div class="modal-sheet profile-sheet">
+        <div class="profile-avatar"><img id="profile-avatar-img" src="" alt=""></div>
+        <h3 id="profile-name">—</h3>
+        <div class="profile-status" id="profile-status"></div>
+        <div class="profile-bio" id="profile-bio"></div>
+        <div class="profile-meta" id="profile-meta"></div>
+        <button class="btn small hidden" id="profile-write">Написать</button>
+        <button class="btn ghost small" id="profile-close" style="margin-top:8px;">Закрыть</button>
+      </div>
+    </div>
+
+    <div id="msg-actions" class="modal-backdrop hidden">
+      <div class="modal-sheet">
+        <div class="msg-actions-preview" id="msg-actions-preview"></div>
+        <button class="btn ghost small act" data-act="reply">Ответить</button>
+        <button class="btn ghost small act hidden" data-act="edit" style="margin-top:8px;">Изменить</button>
+        <button class="btn ghost small act hidden" data-act="select" style="margin-top:8px;">Выделить</button>
+        <button class="btn ghost small danger act hidden" data-act="delete" style="margin-top:8px;">Удалить</button>
+        <button class="btn ghost small" id="msg-actions-cancel" style="margin-top:12px;">Отмена</button>
+      </div>
     </div>
 
     <div id="confirm-modal" class="modal-backdrop hidden">
@@ -1435,6 +1529,14 @@ function listenChatList() {
     }));
     body.innerHTML = rows.join('') || '<div class="empty-state">Пока нет ни одного письма.</div>';
     $all('.chat-row').forEach((row) => {
+      // Аватарка — отдельная зона: открывает профиль, а не чат.
+      // stopPropagation обязателен, иначе следом сработает обработчик строки.
+      const av = row.querySelector('.chat-avatar');
+      if (av) av.onclick = (e) => {
+        if (chatSelection.size) return;   // в режиме выделения аватарка тоже выделяет
+        e.stopPropagation();
+        openProfile(row.dataset.peer);
+      };
       onLongPress(row, () => chatSelectionToggle(row.dataset.chat, row));
       row.onclick = () => {
         // В режиме выделения нажатие переключает выбор, а не открывает чат.
@@ -1600,6 +1702,7 @@ function listenMessages(chatId) {
   if (msgsRef && msgsHandler) msgsRef.off('value', msgsHandler);
   msgsHandler = null;
   msgSelectionClear();
+  clearComposeContext();
   msgsRef = db.ref('chats/' + chatId + '/messages').limitToLast(200);
   lastRenderedCount = 0;
   const listeningTo = chatId;
@@ -1713,8 +1816,11 @@ async function mediaFor(el) {
 }
 
 function renderBubble(m, mine) {
-  const time = `<span class="time">${fmtTime(m.ts)}</span>`;
-  if (m.type === 'text') return `<div class="bubble">${escapeHtml(m.text)}${time}</div>`;
+  const time = `<span class="time">${m.editedAt ? '<span class="edited">изм. </span>' : ''}${fmtTime(m.ts)}</span>`;
+  const quote = m.replyTo
+    ? `<span class="reply-quote" data-jump="${m.replyTo.id}"><span class="rq-name">${escapeHtml(m.replyTo.name || '')}</span><span class="rq-text">${escapeHtml(m.replyTo.text || '')}</span></span>`
+    : '';
+  if (m.type === 'text') return `<div class="bubble">${quote}${escapeHtml(m.text)}${time}</div>`;
   // data-msg — ключ сообщения, по нему подтягивается файл из узла media.
   // data-url заполняется только у старых сообщений, где файл лежит внутри самого
   // сообщения: их надо продолжать показывать без обращения к media.
@@ -1722,7 +1828,7 @@ function renderBubble(m, mine) {
 
   if (m.type === 'voice') {
     const bars = Array.from({ length: 18 }, () => Math.round(6 + Math.random() * 16)).map((h) => `<span style="height:${h}px"></span>`).join('');
-    return `<div class="bubble"><div class="voice-msg" ${ref}>
+    return `<div class="bubble">${quote}<div class="voice-msg" ${ref}>
       <button class="voice-play">${ico('play', 14)}</button>
       <div class="voice-wave">${bars}</div>
       <span class="voice-dur">${fmtDur(m.duration)}</span>
@@ -1751,7 +1857,7 @@ function renderBubble(m, mine) {
       </div>${time}</div>`;
   }
   if (m.type === 'file') {
-    return `<div class="bubble"><button class="file-card" ${ref} data-name="${escapeHtml(m.fileName)}">
+    return `<div class="bubble">${quote}<button class="file-card" ${ref} data-name="${escapeHtml(m.fileName)}">
       <div class="file-ico">${ico('file', 17)}</div>
       <div class="file-info"><div class="file-name">${escapeHtml(m.fileName)}</div><div class="file-size">${fmtSize(m.fileSize)}</div></div>
     </button>${time}</div>`;
@@ -1761,6 +1867,171 @@ function renderBubble(m, mine) {
   if (legacy) return `<div class="bubble" style="opacity:.65;font-style:italic;">${legacy} — из старой версии${time}</div>`;
   return `<div class="bubble" style="opacity:.65;font-style:italic;">сообщение не поддерживается${time}</div>`;
 }
+
+/* ---------- ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ ---------- */
+let profileUid = null;
+
+function fmtJoined(ts) {
+  if (!ts) return '';
+  return 'с нами с ' + new Date(ts).toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' });
+}
+
+async function openProfile(uid) {
+  if (!uid) return;
+  profileUid = uid;
+
+  // Чат поддержки — не человек, показываем карточку службы.
+  if (uid === SUPPORT_UID) {
+    $('#profile-avatar-img').src = SUPPORT_AVATAR;
+    $('#profile-name').textContent = SUPPORT_NAME;
+    $('#profile-status').textContent = 'служба поддержки приложения';
+    $('#profile-status').classList.remove('online');
+    $('#profile-bio').textContent = 'Сюда можно написать об ошибке, предложить идею или пожаловаться. Отвечает автор приложения.';
+    $('#profile-bio').classList.remove('empty');
+    $('#profile-meta').textContent = '';
+    hide($('#profile-write'));
+    show($('#profile-modal'));
+    return;
+  }
+
+  $('#profile-bio').textContent = 'Загрузка…';
+  $('#profile-meta').textContent = '';
+  show($('#profile-modal'));
+
+  let u;
+  try { u = (await db.ref('users/' + uid).get()).val(); }
+  catch (e) { $('#profile-bio').textContent = 'Не удалось загрузить профиль'; return; }
+  if (!u) { $('#profile-bio').textContent = 'Пользователь не найден'; return; }
+
+  $('#profile-avatar-img').src = avatarSrc(u);
+  $('#profile-name').innerHTML = escapeHtml(u.username || '—')
+    + (u.admin ? '<span class="profile-badge">админ</span>' : '');
+
+  const st = $('#profile-status');
+  st.textContent = u.online ? 'в сети' : 'офлайн';
+  st.classList.toggle('online', !!u.online);
+
+  const bio = (u.bio || '').trim();
+  $('#profile-bio').textContent = bio || 'Пользователь ничего о себе не написал';
+  $('#profile-bio').classList.toggle('empty', !bio);
+
+  $('#profile-meta').textContent = fmtJoined(u.createdAt);
+
+  // Кнопка «Написать» нужна только когда мы не в переписке с этим человеком.
+  const showWrite = uid !== currentUser.uid && uid !== (currentPeer && currentPeer.uid);
+  $('#profile-write').classList.toggle('hidden', !showWrite);
+}
+
+$('#profile-close').onclick = () => hide($('#profile-modal'));
+$('#profile-modal').onclick = (e) => { if (e.target.id === 'profile-modal') hide($('#profile-modal')); };
+$('#profile-write').onclick = () => {
+  const uid = profileUid;
+  hide($('#profile-modal'));
+  openChat(chatIdFor(currentUser.uid, uid), uid);
+};
+
+// Шапка чата открывает профиль собеседника.
+$('#peer-avatar').onclick = () => openProfile(currentPeer && currentPeer.uid);
+$('.chat-header-name').onclick = () => openProfile(currentPeer && currentPeer.uid);
+
+/* ---------- ОТВЕТ И ИЗМЕНЕНИЕ ---------- */
+// Состояние композера: либо обычная отправка, либо ответ, либо правка.
+let replyTo = null;   // { id, name, text }
+let editing = null;   // { id, text }
+
+// Короткая подпись под тип сообщения — она едет в цитате вместе с ответом,
+// чтобы не тянуть оригинал из базы ради одной строчки.
+function messageDigest(m) {
+  if (m.type === 'text') return (m.text || '').slice(0, 90);
+  return { voice: 'голосовое сообщение', video: 'видео-кружок', image: 'фотография',
+           clip: 'видео', file: m.fileName || 'файл' }[m.type] || 'сообщение';
+}
+
+function updateComposeContext() {
+  const bar = $('#compose-context');
+  if (replyTo) {
+    bar.classList.remove('hidden');
+    $('#cc-title').textContent = 'Ответ ' + replyTo.name;
+    $('#cc-text').textContent = replyTo.text;
+  } else if (editing) {
+    bar.classList.remove('hidden');
+    $('#cc-title').textContent = 'Изменение сообщения';
+    $('#cc-text').textContent = editing.text;
+  } else {
+    bar.classList.add('hidden');
+  }
+}
+
+function clearComposeContext() {
+  replyTo = null;
+  if (editing) { input.value = ''; input.style.height = 'auto'; refreshComposerButtons(); }
+  editing = null;
+  updateComposeContext();
+}
+
+function startReply(m, mine) {
+  editing = null;
+  replyTo = { id: m.id, name: mine ? 'себе' : (currentPeer ? currentPeer.username : ''), text: messageDigest(m) };
+  updateComposeContext();
+  input.focus();
+}
+
+function startEdit(m) {
+  replyTo = null;
+  editing = { id: m.id, text: messageDigest(m) };
+  input.value = m.text || '';
+  updateComposeContext();
+  refreshComposerButtons();
+  input.focus();
+}
+
+async function applyEdit(text) {
+  const id = editing.id, chatId = currentChatId;
+  clearComposeContext();
+  try {
+    await db.ref('chats/' + chatId + '/messages/' + id).update({ text, editedAt: Date.now() });
+  } catch (e) { toast('Не удалось изменить: ' + (e.code || e.message)); }
+}
+
+// Переход к процитированному сообщению. Если оно вне загруженного окна
+// или удалено — честно говорим об этом, а не прокручиваем в пустоту.
+function jumpToMessage(id) {
+  const row = $('#messages').querySelector(`.msg-row[data-msg="${id}"]`);
+  if (!row) { toast('Сообщение не найдено'); return; }
+  row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  row.classList.remove('flash');
+  void row.offsetWidth;   // перезапуск анимации: без этого повторное нажатие ничего не даст
+  row.classList.add('flash');
+}
+
+/* --- меню действий над сообщением --- */
+let actionTarget = null;
+
+function openMsgActions(m, mine) {
+  actionTarget = { m, mine };
+  $('#msg-actions-preview').textContent = messageDigest(m);
+  // Изменять можно только свой текст: у голосового или файла менять нечего.
+  $('[data-act="edit"]').classList.toggle('hidden', !(mine && m.type === 'text'));
+  $('[data-act="select"]').classList.toggle('hidden', !mine);
+  $('[data-act="delete"]').classList.toggle('hidden', !mine);
+  show($('#msg-actions'));
+}
+
+$('#msg-actions-cancel').onclick = () => hide($('#msg-actions'));
+$('#msg-actions').onclick = (e) => { if (e.target.id === 'msg-actions') hide($('#msg-actions')); };
+$all('#msg-actions .act').forEach((btn) => {
+  btn.onclick = async () => {
+    if (!actionTarget) return;
+    const { m, mine } = actionTarget;
+    hide($('#msg-actions'));
+    const act = btn.dataset.act;
+    if (act === 'reply') startReply(m, mine);
+    else if (act === 'edit') startEdit(m);
+    else if (act === 'select') msgSelectionToggle(m.id);
+    else if (act === 'delete') { msgSelectionClear(); msgSelectionToggle(m.id); await deleteSelectedMessages(); }
+  };
+});
+$('#cc-cancel').onclick = clearComposeContext;
 
 /* ---------- ВЫДЕЛЕНИЕ И УДАЛЕНИЕ ---------- */
 // Долгое нажатие вместо правой кнопки: на телефоне другого способа нет.
@@ -2026,8 +2297,14 @@ input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey)
 function sendText() {
   const text = input.value.trim();
   if (!text) return;
-  input.value = ''; input.style.height = 'auto'; refreshComposerButtons();
-  pushMessage({ type: 'text', text }).catch((e) => { toast('Не удалось отправить: ' + (e.code || e.message)); console.error(e); });
+  if (editing) { applyEdit(text); return; }
+  const payload = { type: 'text', text };
+  // Цитату сохраняем прямо в сообщении: иначе при каждой отрисовке пришлось бы
+  // догружать оригинал, а он может быть уже удалён или вне окна из 200 сообщений.
+  if (replyTo) payload.replyTo = { id: replyTo.id, name: replyTo.name, text: replyTo.text };
+  input.value = ''; input.style.height = 'auto';
+  clearComposeContext(); refreshComposerButtons();
+  pushMessage(payload).catch((e) => { toast('Не удалось отправить: ' + (e.code || e.message)); console.error(e); });
 }
 
 /* ---------- 19. ПРИКРЕПЛЕНИЕ ФАЙЛОВ ---------- */
@@ -2203,12 +2480,15 @@ function listenFeed() {
     body.innerHTML = posts.map((p) => {
       const author = authors[p.author];
       return `<div class="post-card" data-post="${p.id}" data-author="${p.author}">
-        <div class="post-head"><img src="${avatarSrc(author)}"><div><div class="p-name">${escapeHtml(author.username)}</div><div class="p-time">${fmtPostTime(p.ts)}</div></div></div>
+        <div class="post-head post-author" style="cursor:pointer;"><img src="${avatarSrc(author)}"><div><div class="p-name">${escapeHtml(author.username)}</div><div class="p-time">${fmtPostTime(p.ts)}</div></div></div>
         ${p.text ? `<div class="post-text">${escapeHtml(p.text)}</div>` : ''}
         ${postMediaMarkup(p)}
         ${p.author === currentUser.uid ? `<div class="post-actions"><button class="post-delete">${ico('trash', 14)} удалить</button></div>` : ''}
       </div>`;
     }).join('');
+    body.querySelectorAll('.post-author').forEach((el) => {
+      el.onclick = () => openProfile(el.closest('.post-card').dataset.author);
+    });
     body.querySelectorAll('.post-media').forEach((el) => { el.onclick = () => openViewer(el); });
     body.querySelectorAll('.media-thumb-inline').forEach((el) => { el.onclick = () => openViewer(el); });
 
