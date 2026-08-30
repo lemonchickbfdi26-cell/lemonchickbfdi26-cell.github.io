@@ -135,6 +135,14 @@ input,textarea{user-select:text; -webkit-user-select:text;}
 .support-item .s-preview{ font-size:12.5px; color:var(--ink-soft); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .support-item .s-time{ font-family:var(--mono); font-size:10.5px; color:var(--ink-soft); flex-shrink:0; }
 
+.menu-item.danger{ color:var(--danger); }
+.menu-item .mi-state{ float:right; font-family:var(--mono); font-size:11px; color:var(--ink-soft); }
+.chat-row.pinned .name::after{ content:' 📌'; font-size:11px; }
+.search-hit{ padding:10px 4px; border-bottom:1px solid var(--line); cursor:pointer; }
+.search-hit .sh-text{ font-size:13.5px; }
+.search-hit .sh-time{ font-family:var(--mono); font-size:10.5px; color:var(--ink-soft); }
+.search-hit mark{ background:var(--accent-soft); color:inherit; border-radius:3px; }
+
 /* Карточка профиля */
 .profile-sheet{ text-align:center; }
 .profile-avatar{
@@ -792,12 +800,26 @@ button.file-card{
     <div id="chat-menu-modal" class="modal-backdrop hidden">
       <div class="modal-sheet">
         <h3>Чат</h3>
-        <div class="menu-item" id="menu-wallpaper">🎨 Сменить обои</div>
+        <div class="menu-item" id="menu-profile">👤 Профиль собеседника</div>
+        <div class="menu-item" id="menu-wallpaper">🎨 Обои этого чата</div>
+        <div class="menu-item" id="menu-pin">📌 Закрепить чат</div>
+        <div class="menu-item" id="menu-mute">🔔 Отключить уведомления</div>
+        <div class="menu-item" id="menu-search">🔍 Поиск по переписке</div>
+        <div class="menu-item danger" id="menu-clear">🧹 Очистить переписку</div>
         <button class="btn ghost small" id="close-chat-menu" style="margin-top:10px;">Закрыть</button>
       </div>
     </div>
 
     <!-- ===== MODAL: обои чата ===== -->
+    <div id="search-modal" class="modal-backdrop hidden">
+      <div class="modal-sheet" style="max-height:80vh;">
+        <h3>Поиск по переписке</h3>
+        <div class="field"><input id="search-input" type="text" placeholder="Что ищем?"></div>
+        <div id="search-results"></div>
+        <button class="btn ghost small" id="close-search" style="margin-top:12px;">Закрыть</button>
+      </div>
+    </div>
+
     <div id="wallpaper-modal" class="modal-backdrop hidden">
       <div class="modal-sheet">
         <h3>Обои чата</h3>
@@ -1506,7 +1528,10 @@ function listenChatList() {
     }));
     // Поддержка всегда первой строкой: её ищут в трудную минуту,
     // и она не должна тонуть под свежими переписками.
-    chats.sort((a, b) => (b.kind === 'support') - (a.kind === 'support') || b.updatedAt - a.updatedAt);
+    chats.sort((a, b) =>
+      (b.kind === 'support') - (a.kind === 'support')
+      || (isPinned(b.chatId) - isPinned(a.chatId))
+      || b.updatedAt - a.updatedAt);
 
     const rows = await Promise.all(chats.filter((c) => c.peerUid).map(async (c) => {
       const support = c.kind === 'support';
@@ -1518,7 +1543,7 @@ function listenChatList() {
         const peer = peerSnap.val() || { username: '?' };
         name = peer.username; avatar = avatarSrc(peer);
       }
-      return `<div class="chat-row${support ? ' support-row' : ''}" data-chat="${c.chatId}" data-peer="${c.peerUid}" data-kind="${c.kind}">
+      return `<div class="chat-row${support ? ' support-row' : ''}${isPinned(c.chatId) ? ' pinned' : ''}" data-chat="${c.chatId}" data-peer="${c.peerUid}" data-kind="${c.kind}">
         <div class="chat-avatar"><img src="${avatar}"></div>
         <div class="chat-meta">
           <div class="name">${escapeHtml(name)}${support ? ' <span class="support-tag">служебный</span>' : ''}</div>
@@ -1672,9 +1697,97 @@ function listenPeerStatus(peerUid) {
 }
 
 /* ---------- 16. МЕНЮ ЧАТА / ОБОИ ---------- */
-$('#chat-menu-btn').onclick = () => show($('#chat-menu-modal'));
+$('#chat-menu-btn').onclick = () => { refreshChatMenu(); show($('#chat-menu-modal')); };
 $('#close-chat-menu').onclick = () => hide($('#chat-menu-modal'));
 $('#menu-wallpaper').onclick = () => { hide($('#chat-menu-modal')); buildWallpaperGrid(); show($('#wallpaper-modal')); };
+$('#menu-profile').onclick = () => { hide($('#chat-menu-modal')); openProfile(currentPeer && currentPeer.uid); };
+
+/* --- закрепление и уведомления: локальные настройки, у каждого свои --- */
+// Хранятся в localStorage, а не в базе: это предпочтения одного устройства,
+// собеседнику знать о них незачем, и синхронизировать нечего.
+function chatFlag(kind, chatId) { return localStorage.getItem(kind + '_' + chatId) === '1'; }
+function setChatFlag(kind, chatId, on) {
+  if (on) localStorage.setItem(kind + '_' + chatId, '1');
+  else localStorage.removeItem(kind + '_' + chatId);
+}
+function isPinned(chatId) { return chatFlag('pinned', chatId); }
+function isMuted(chatId) { return chatFlag('muted', chatId); }
+
+function refreshChatMenu() {
+  const pinned = isPinned(currentChatId), muted = isMuted(currentChatId);
+  $('#menu-pin').innerHTML = (pinned ? '📌 Открепить чат' : '📌 Закрепить чат');
+  $('#menu-mute').innerHTML = (muted ? '🔔 Включить уведомления' : '🔕 Отключить уведомления');
+}
+
+$('#menu-pin').onclick = () => {
+  setChatFlag('pinned', currentChatId, !isPinned(currentChatId));
+  refreshChatMenu();
+  toast(isPinned(currentChatId) ? 'Чат закреплён' : 'Чат откреплён');
+};
+$('#menu-mute').onclick = () => {
+  setChatFlag('muted', currentChatId, !isMuted(currentChatId));
+  refreshChatMenu();
+  toast(isMuted(currentChatId) ? 'Уведомления отключены' : 'Уведомления включены');
+};
+
+/* --- очистка переписки --- */
+$('#menu-clear').onclick = async () => {
+  hide($('#chat-menu-modal'));
+  const ok = await askConfirm('Очистить переписку?',
+    'Удалятся только ваши сообщения — чужие стереть нельзя. Отменить не получится.');
+  if (!ok) return;
+  const chatId = currentChatId;
+  const mine = olderItems.concat(liveItems).filter((m) => m.sender === currentUser.uid);
+  if (!mine.length) { toast('Ваших сообщений здесь нет'); return; }
+  toast('Удаление: ' + mine.length + '…');
+  let failed = 0;
+  for (const m of mine) {
+    try {
+      await db.ref('chats/' + chatId + '/messages/' + m.id).remove();
+      await db.ref('chats/' + chatId + '/media/' + m.id).remove();
+      mediaCache.delete('chats/' + chatId + '/media/' + m.id);
+    } catch (e) { failed++; }
+  }
+  toast(failed ? ('Не удалось удалить: ' + failed) : 'Переписка очищена');
+};
+
+/* --- поиск по переписке --- */
+// Ищем среди загруженного, а не в базе: Realtime Database не умеет искать
+// по подстроке, а тянуть всю переписку ради поиска слишком дорого.
+$('#menu-search').onclick = () => {
+  hide($('#chat-menu-modal'));
+  $('#search-input').value = '';
+  $('#search-results').innerHTML = '<div class="empty-state">Введите слово для поиска</div>';
+  show($('#search-modal'));
+  $('#search-input').focus();
+};
+$('#close-search').onclick = () => hide($('#search-modal'));
+$('#search-modal').onclick = (e) => { if (e.target.id === 'search-modal') hide($('#search-modal')); };
+$('#search-input').oninput = (e) => {
+  const q = e.target.value.trim().toLowerCase();
+  const box = $('#search-results');
+  if (q.length < 2) { box.innerHTML = '<div class="empty-state">Введите хотя бы две буквы</div>'; return; }
+  const hits = olderItems.concat(liveItems)
+    .filter((m) => m.type === 'text' && (m.text || '').toLowerCase().includes(q))
+    .reverse().slice(0, 40);
+  if (!hits.length) {
+    box.innerHTML = '<div class="empty-state">Ничего не нашлось среди загруженных сообщений.<br>Попробуйте подгрузить более раннюю историю.</div>';
+    return;
+  }
+  box.innerHTML = hits.map((m) => {
+    const t = escapeHtml(m.text);
+    const at = t.toLowerCase().indexOf(q);
+    const marked = at < 0 ? t
+      : t.slice(0, at) + '<mark>' + t.slice(at, at + q.length) + '</mark>' + t.slice(at + q.length);
+    return `<div class="search-hit" data-jump="${m.id}">
+      <div class="sh-text">${marked}</div>
+      <div class="sh-time">${fmtTime(m.ts)}</div>
+    </div>`;
+  }).join('');
+  $all('.search-hit').forEach((h) => {
+    h.onclick = () => { hide($('#search-modal')); jumpToMessage(h.dataset.jump); };
+  });
+};
 
 function wallpaperKeyFor(chatId) { return localStorage.getItem('wallpaper_' + chatId) || 'wall_default'; }
 function applyWallpaper() { $('#chat-bg-img').src = assetSrc(wallpaperKeyFor(currentChatId)); }
@@ -1697,61 +1810,90 @@ $('#close-wallpaper').onclick = () => hide($('#wallpaper-modal'));
 
 /* ---------- 17. СООБЩЕНИЯ: ПРИЁМ ---------- */
 let lastRenderedCount = 0;
+let liveItems = [];   // последнее окно, приходящее от слушателя
+
+// Отрисовка вынесена из слушателя: её вызывает и он, и подгрузка ранней истории.
+function renderMessages() {
+  const box = $('#messages');
+  const wasNearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
+  const all = olderItems.concat(liveItems);
+  const isNew = all.length > lastRenderedCount;
+
+  box.innerHTML = '';
+  // Кнопку показываем, только если история может быть длиннее окна.
+  if (!noMoreHistory && all.length >= MSG_WINDOW) {
+    box.insertAdjacentHTML('beforeend',
+      '<button class="btn ghost small" id="load-older" style="margin:10px auto;max-width:220px;">Показать более ранние</button>');
+  }
+
+  let lastDay = '';
+  all.forEach((m) => {
+    const day = new Date(m.ts || Date.now()).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
+    if (day !== lastDay) { box.insertAdjacentHTML('beforeend', `<div class="day-divider">${day}</div>`); lastDay = day; }
+    const mine = m.sender === currentUser.uid;
+    const el = document.createElement('div');
+    el.className = 'msg-row' + (mine ? ' mine' : '');
+    el.dataset.msg = m.id;
+    el.innerHTML = renderBubble(m, mine);
+    if (!adminViewMode) {
+      // Долгое нажатие открывает меню действий. Ответить можно на любое
+      // сообщение, изменить и удалить — только своё; решает openMsgActions.
+      onLongPress(el, () => {
+        if (msgSelection.size) { if (mine) msgSelectionToggle(m.id); return; }
+        openMsgActions(m, mine);
+      });
+      el.addEventListener('click', (ev) => {
+        if (!msgSelection.size) return;      // вне режима выделения клик работает как обычно
+        if (!mine) return;                    // чужие сообщения в выделение не попадают
+        ev.preventDefault(); ev.stopPropagation();
+        msgSelectionToggle(m.id);
+      }, true);
+    }
+    box.appendChild(el);
+  });
+
+  const older = $('#load-older');
+  if (older) older.onclick = loadOlderMessages;
+
+  lastRenderedCount = all.length;
+  wireBubbleEvents(box);
+
+  // Список перерисовывается целиком при любом изменении — возвращаем подсветку.
+  if (msgSelection.size) {
+    for (const id of [...msgSelection]) {
+      if (!all.some((it) => it.id === id)) msgSelection.delete(id);   // сообщение уже удалено
+    }
+    msgSelectionUpdate();
+  }
+  // Прокручиваем вниз только при новых сообщениях: во время чтения истории
+  // это выбрасывало бы пользователя обратно в конец переписки.
+  if (!loadingHistory && (wasNearBottom || isNew)) box.scrollTop = box.scrollHeight;
+}
+
 function listenMessages(chatId) {
   // ВАЖНО: снимаем слушателя со СТАРОГО рефа до того, как перезапишем msgsRef.
   if (msgsRef && msgsHandler) msgsRef.off('value', msgsHandler);
   msgsHandler = null;
   msgSelectionClear();
   clearComposeContext();
-  msgsRef = db.ref('chats/' + chatId + '/messages').limitToLast(200);
+  resetHistory();
+  liveItems = [];
+  msgsRef = db.ref('chats/' + chatId + '/messages').limitToLast(MSG_WINDOW);
   lastRenderedCount = 0;
   const listeningTo = chatId;
   msgsHandler = msgsRef.on('value', (snap) => {
    try {
     // Страховка: если чат успели переключить, этот колбэк ничего не рисует.
     if (listeningTo !== currentChatId) return;
-    const box = $('#messages');
-    const wasNearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
-    box.innerHTML = '';
-    let lastDay = '';
-    const items = [];
-    snap.forEach((child) => { items.push({ id: child.key, ...child.val() }); });
-    const isNew = items.length > lastRenderedCount;
-    items.forEach((m) => {
-      const day = new Date(m.ts || Date.now()).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
-      if (day !== lastDay) { box.insertAdjacentHTML('beforeend', `<div class="day-divider">${day}</div>`); lastDay = day; }
-      const mine = m.sender === currentUser.uid;
-      const el = document.createElement('div');
-      el.className = 'msg-row' + (mine ? ' mine' : '');
-      el.dataset.msg = m.id;
-      el.innerHTML = renderBubble(m, mine);
-      if (!adminViewMode) {
-        // Долгое нажатие открывает меню действий. Ответить можно на любое
-        // сообщение, изменить и удалить — только своё; решает openMsgActions.
-        onLongPress(el, () => {
-          if (msgSelection.size) { if (mine) msgSelectionToggle(m.id); return; }
-          openMsgActions(m, mine);
-        });
-        el.addEventListener('click', (ev) => {
-          if (!msgSelection.size) return;      // вне режима выделения клик работает как обычно
-          if (!mine) return;                    // чужие сообщения в выделение не попадают
-          ev.preventDefault(); ev.stopPropagation();
-          msgSelectionToggle(m.id);
-        }, true);
-      }
-      box.appendChild(el);
-    });
-    lastRenderedCount = items.length;
-    wireBubbleEvents(box);
-    // Список перерисовывается целиком при любом изменении — возвращаем подсветку.
-    if (msgSelection.size) {
-      for (const id of [...msgSelection]) {
-        if (!items.some((it) => it.id === id)) msgSelection.delete(id);   // сообщение уже удалено
-      }
-      msgSelectionUpdate();
+    liveItems = [];
+    snap.forEach((child) => { liveItems.push({ id: child.key, ...child.val() }); });
+    // Живое окно съехало вперёд — убираем из истории то, что теперь в нём.
+    if (olderItems.length) {
+      const live = new Set(liveItems.map((m) => m.id));
+      olderItems = olderItems.filter((m) => !live.has(m.id));
     }
-    setTimeout(() => migrateInlineMedia(listeningTo, items), 1500);
-    if (wasNearBottom || isNew) box.scrollTop = box.scrollHeight;
+    renderMessages();
+    setTimeout(() => migrateInlineMedia(listeningTo, liveItems), 1500);
    } catch (err) { console.error('Ошибка отрисовки сообщений:', err); }
   }, (err) => {
     console.error('Чтение сообщений отклонено:', err);
@@ -1792,6 +1934,49 @@ async function migrateInlineMedia(chatId, items) {
 // Файлы лежат в chats/<id>/media/<msgId> и тянутся только когда их попросили.
 // Кэш держим в памяти: повторное нажатие на то же голосовое не идёт в сеть.
 const mediaCache = new Map();
+
+/* --- подгрузка ранней истории --- */
+// Слушатель держит только последние MSG_WINDOW сообщений: тянуть всю переписку
+// при каждом открытии чата нельзя. Всё, что старше, догружается вручную сюда.
+const MSG_WINDOW = 200;
+let olderItems = [];       // сообщения старше живого окна, уже загруженные
+let noMoreHistory = false; // дошли до начала переписки
+let loadingHistory = false;
+
+function resetHistory() { olderItems = []; noMoreHistory = false; loadingHistory = false; }
+
+async function loadOlderMessages() {
+  if (loadingHistory || noMoreHistory) return;
+  const box = $('#messages');
+  const firstId = box.querySelector('.msg-row') && box.querySelector('.msg-row').dataset.msg;
+  if (!firstId) return;
+  loadingHistory = true;
+  const btn = $('#load-older');
+  if (btn) { btn.disabled = true; btn.textContent = 'Загрузка…'; }
+  const chatId = currentChatId;
+  try {
+    // endAt включает границу, поэтому берём на одно больше и отбрасываем дубль.
+    const snap = await db.ref('chats/' + chatId + '/messages')
+      .orderByKey().endAt(firstId).limitToLast(MSG_WINDOW + 1).get();
+    const batch = [];
+    snap.forEach((c) => { batch.push({ id: c.key, ...c.val() }); });
+    batch.pop();   // последний — это firstId, он уже на экране
+    if (chatId !== currentChatId) return;   // чат успели переключить
+    if (!batch.length) { noMoreHistory = true; }
+    else {
+      olderItems = batch.concat(olderItems);
+      if (batch.length < MSG_WINDOW) noMoreHistory = true;
+    }
+    // Держим позицию: после вставки сверху лента иначе прыгнет к началу.
+    const prevHeight = box.scrollHeight, prevTop = box.scrollTop;
+    renderMessages();
+    box.scrollTop = prevTop + (box.scrollHeight - prevHeight);
+  } catch (e) {
+    toast('Не удалось загрузить историю: ' + (e.code || e.message));
+  } finally {
+    loadingHistory = false;
+  }
+}
 
 // Путь задаётся элементом, поэтому одна функция обслуживает и переписку
 // (chats/<id>/media/<msgId>), и публикации (postMedia/<postId>).
