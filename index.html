@@ -185,6 +185,19 @@ input,textarea{user-select:text; -webkit-user-select:text;}
 .cc-title{ font-size:12px; font-weight:600; color:var(--accent); }
 .cc-text{ font-size:12.5px; color:var(--ink-soft); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
+/* Непрочитанные */
+.chat-row.unread .name{ font-weight:800; }
+.chat-row.unread .preview{ color:var(--ink); }
+.chat-side{ display:flex; flex-direction:column; align-items:flex-end; gap:5px; flex-shrink:0; }
+.unread-dot{ width:9px; height:9px; border-radius:50%; background:var(--accent); }
+.mute-mark{ font-size:10px; opacity:.6; }
+.nav-btn{ position:relative; }
+.nav-badge{
+  position:absolute; top:2px; right:14px; min-width:16px; height:16px; padding:0 4px;
+  border-radius:8px; background:var(--accent); color:#fff8ef;
+  font-family:var(--mono); font-size:10px; line-height:16px; text-align:center;
+}
+
 /* Chrome перехватывает долгое нажатие на любой <img> и показывает своё меню
    «Скачать изображение». Оно перебивает наше меню сообщений, а для аватарок
    и обоев просто не нужно — у просмотрщика есть своя кнопка сохранения. */
@@ -703,6 +716,9 @@ button.file-card{
         <div class="topbar"><h2 class="grow">Настройки</h2></div>
         <div class="settings-body">
           <div class="settings-group">
+            <div class="settings-row" id="settings-notifications">
+              🔔 Уведомления о письмах<span class="mi-state" id="notif-state">выкл</span>
+            </div>
             <div class="settings-row" id="settings-clear-wallpapers">
               <span>Сбросить обои чатов на этом устройстве</span>
             </div>
@@ -1519,77 +1535,149 @@ $('#settings-admin-row').onclick = () => openAdminPanel();
 
 /* ---------- 13. СПИСОК ЧАТОВ ---------- */
 let chatListRef = null, chatListHandler = null;
+/* ---------- СПИСОК ЧАТОВ ---------- */
+// На каждый чат вешаем слушателя его meta. Без этого список оживает только при
+// добавлении или удалении чата, а новые сообщения в превью не попадают вовсе.
+const chatMetaWatchers = new Map();   // chatId -> { ref, handler }
+const chatMetaCache = new Map();      // chatId -> meta
+const userCache = new Map();          // uid -> профиль, чтобы не перечитывать при каждой перерисовке
+
+function lastSeenAt(chatId) { return Number(localStorage.getItem('seen_' + chatId) || 0); }
+function markChatSeen(chatId) {
+  const meta = chatMetaCache.get(chatId);
+  localStorage.setItem('seen_' + chatId, String(meta && meta.lastUpdatedAt ? meta.lastUpdatedAt : Date.now()));
+}
+function hasUnread(chatId) {
+  const meta = chatMetaCache.get(chatId);
+  if (!meta || !meta.lastUpdatedAt) return false;
+  if (meta.lastSender === currentUser.uid) return false;   // своё непрочитанным не считается
+  return meta.lastUpdatedAt > lastSeenAt(chatId);
+}
+
+function watchChatMeta(chatId) {
+  if (chatMetaWatchers.has(chatId)) return;
+  const ref = db.ref('chats/' + chatId + '/meta');
+  const handler = ref.on('value', (snap) => {
+    const meta = snap.val() || {};
+    const prev = chatMetaCache.get(chatId);
+    chatMetaCache.set(chatId, meta);
+    // Оповещаем только о чужом сообщении в неоткрытом и невыключенном чате.
+    const arrived = prev && meta.lastUpdatedAt && meta.lastUpdatedAt > (prev.lastUpdatedAt || 0);
+    if (arrived && meta.lastSender && meta.lastSender !== currentUser.uid) {
+      if (chatId === currentChatId) markChatSeen(chatId);
+      else if (!isMuted(chatId)) notifyNewMessage(chatId, meta);
+    }
+    renderChatList();
+  });
+  chatMetaWatchers.set(chatId, { ref, handler });
+}
+
+function unwatchChatMeta(chatId) {
+  const w = chatMetaWatchers.get(chatId);
+  if (!w) return;
+  w.ref.off('value', w.handler);
+  chatMetaWatchers.delete(chatId);
+  chatMetaCache.delete(chatId);
+}
+
+function stopChatListWatchers() {
+  [...chatMetaWatchers.keys()].forEach(unwatchChatMeta);
+}
+
+async function userProfile(uid) {
+  if (userCache.has(uid)) return userCache.get(uid);
+  const snap = await db.ref('users/' + uid).get();
+  const u = snap.val() || { username: '?' };
+  userCache.set(uid, u);
+  return u;
+}
+
+let renderListPending = false;
+async function renderChatList() {
+  // Слушателей много, и при всплеске изменений они дёргают отрисовку пачкой.
+  // Собираем их в один проход, иначе список моргает.
+  if (renderListPending) return;
+  renderListPending = true;
+  await Promise.resolve();
+  renderListPending = false;
+
+  const body = $('#chatlist-body');
+  const chats = [...chatMetaCache.entries()].map(([chatId, meta]) => {
+    const members = meta.members || {};
+    return {
+      chatId,
+      peerUid: Object.keys(members).find((u) => u !== currentUser.uid),
+      kind: meta.kind || '',
+      lastPreview: meta.lastPreview || '',
+      updatedAt: meta.lastUpdatedAt || meta.createdAt || 0,
+    };
+  }).filter((c) => c.peerUid);
+
+  if (!chats.length) {
+    body.innerHTML = '<div class="empty-state">Пока нет ни одного письма.<br>Нажмите + сверху, чтобы начать переписку.</div>';
+    updateUnreadBadge();
+    return;
+  }
+
+  // Поддержка первой, за ней закреплённые, дальше по свежести.
+  chats.sort((a, b) =>
+    (b.kind === 'support') - (a.kind === 'support')
+    || (isPinned(b.chatId) - isPinned(a.chatId))
+    || b.updatedAt - a.updatedAt);
+
+  const rows = await Promise.all(chats.map(async (c) => {
+    const support = c.kind === 'support';
+    const peer = support ? null : await userProfile(c.peerUid);
+    const name = support ? SUPPORT_NAME : peer.username;
+    const avatar = support ? SUPPORT_AVATAR : avatarSrc(peer);
+    const unread = hasUnread(c.chatId);
+    return `<div class="chat-row${support ? ' support-row' : ''}${isPinned(c.chatId) ? ' pinned' : ''}${unread ? ' unread' : ''}" data-chat="${c.chatId}" data-peer="${c.peerUid}" data-kind="${c.kind}">
+      <div class="chat-avatar"><img src="${avatar}"></div>
+      <div class="chat-meta">
+        <div class="name">${escapeHtml(name)}${support ? ' <span class="support-tag">служебный</span>' : ''}${isMuted(c.chatId) ? ' <span class="mute-mark">🔕</span>' : ''}</div>
+        <div class="preview">${escapeHtml(c.lastPreview || (support ? 'Напишите об ошибке или предложите идею' : 'Начните разговор'))}</div>
+      </div>
+      <div class="chat-side">
+        <div class="chat-time">${c.updatedAt ? fmtTime(c.updatedAt) : ''}</div>
+        ${unread ? '<div class="unread-dot"></div>' : ''}
+      </div>
+    </div>`;
+  }));
+  body.innerHTML = rows.join('');
+
+  $all('.chat-row').forEach((row) => {
+    const av = row.querySelector('.chat-avatar');
+    if (av) av.onclick = (e) => {
+      if (chatSelection.size) return;
+      e.stopPropagation();
+      openProfile(row.dataset.peer);
+    };
+    onLongPress(row, () => chatSelectionToggle(row.dataset.chat, row));
+    row.onclick = () => {
+      if (chatSelection.size) { chatSelectionToggle(row.dataset.chat, row); return; }
+      openChat(row.dataset.chat, row.dataset.peer);
+    };
+  });
+
+  if (chatSelection.size) {
+    const alive = new Set(chats.map((c) => c.chatId));
+    for (const id of [...chatSelection]) if (!alive.has(id)) chatSelection.delete(id);
+    chatSelectionUpdate();
+  }
+  updateUnreadBadge();
+}
+
 function listenChatList() {
   chatListRef = db.ref('userChats/' + currentUser.uid);
   const ref = chatListRef;
   if (chatListHandler) ref.off('value', chatListHandler);
-  chatListHandler = ref.on('value', async (snap) => {
-    const body = $('#chatlist-body');
-    if (!snap.exists()) {
-      body.innerHTML = '<div class="empty-state">Пока нет ни одного письма.<br>Нажмите + сверху, чтобы начать переписку.</div>';
-      return;
-    }
-    const chatIds = [];
-    // Скобки обязательны: DataSnapshot.forEach прерывает обход, если колбэк вернул true,
-    // а push() возвращает длину массива — то есть truthy начиная с первого элемента.
-    snap.forEach((child) => { chatIds.push(child.key); });
-
-    const chats = await Promise.all(chatIds.map(async (chatId) => {
-      const metaSnap = await db.ref('chats/' + chatId + '/meta').get();
-      const meta = metaSnap.val() || {};
-      const members = meta.members || {};
-      const peerUid = Object.keys(members).find((u) => u !== currentUser.uid);
-      return { chatId, peerUid, kind: meta.kind || '', lastPreview: meta.lastPreview || '', updatedAt: meta.lastUpdatedAt || meta.createdAt || 0 };
-    }));
-    // Поддержка всегда первой строкой: её ищут в трудную минуту,
-    // и она не должна тонуть под свежими переписками.
-    chats.sort((a, b) =>
-      (b.kind === 'support') - (a.kind === 'support')
-      || (isPinned(b.chatId) - isPinned(a.chatId))
-      || b.updatedAt - a.updatedAt);
-
-    const rows = await Promise.all(chats.filter((c) => c.peerUid).map(async (c) => {
-      const support = c.kind === 'support';
-      let name, avatar;
-      if (support) {
-        name = SUPPORT_NAME; avatar = SUPPORT_AVATAR;
-      } else {
-        const peerSnap = await db.ref('users/' + c.peerUid).get();
-        const peer = peerSnap.val() || { username: '?' };
-        name = peer.username; avatar = avatarSrc(peer);
-      }
-      return `<div class="chat-row${support ? ' support-row' : ''}${isPinned(c.chatId) ? ' pinned' : ''}" data-chat="${c.chatId}" data-peer="${c.peerUid}" data-kind="${c.kind}">
-        <div class="chat-avatar"><img src="${avatar}"></div>
-        <div class="chat-meta">
-          <div class="name">${escapeHtml(name)}${support ? ' <span class="support-tag">служебный</span>' : ''}</div>
-          <div class="preview">${escapeHtml(c.lastPreview || (support ? 'Напишите об ошибке или предложите идею' : 'Начните разговор'))}</div>
-        </div>
-        <div class="chat-time">${c.updatedAt ? fmtTime(c.updatedAt) : ''}</div>
-      </div>`;
-    }));
-    body.innerHTML = rows.join('') || '<div class="empty-state">Пока нет ни одного письма.</div>';
-    $all('.chat-row').forEach((row) => {
-      // Аватарка — отдельная зона: открывает профиль, а не чат.
-      // stopPropagation обязателен, иначе следом сработает обработчик строки.
-      const av = row.querySelector('.chat-avatar');
-      if (av) av.onclick = (e) => {
-        if (chatSelection.size) return;   // в режиме выделения аватарка тоже выделяет
-        e.stopPropagation();
-        openProfile(row.dataset.peer);
-      };
-      onLongPress(row, () => chatSelectionToggle(row.dataset.chat, row));
-      row.onclick = () => {
-        // В режиме выделения нажатие переключает выбор, а не открывает чат.
-        if (chatSelection.size) { chatSelectionToggle(row.dataset.chat, row); return; }
-        openChat(row.dataset.chat, row.dataset.peer);
-      };
-    });
-    // Список перерисовывается при каждом изменении — чистим выбор от исчезнувших чатов.
-    if (chatSelection.size) {
-      const alive = new Set(chats.map((c) => c.chatId));
-      for (const id of [...chatSelection]) if (!alive.has(id)) chatSelection.delete(id);
-      chatSelectionUpdate();
-    }
+  chatListHandler = ref.on('value', (snap) => {
+    const ids = [];
+    snap.forEach((child) => { ids.push(child.key); });
+    // Синхронизируем набор слушателей с актуальным списком чатов.
+    ids.forEach(watchChatMeta);
+    [...chatMetaWatchers.keys()].filter((id) => !ids.includes(id)).forEach(unwatchChatMeta);
+    if (!ids.length) renderChatList();
   });
 }
 
@@ -1687,6 +1775,8 @@ async function openChat(chatId, peerUid, readOnly) {
   $('#messages').innerHTML = '';
   applyWallpaper();
   listenPeerStatus(peerUid);
+  markChatSeen(chatId);
+  renderChatList();
   listenMessages(chatId);
 
   const banner = $('#readonly-banner'), composer = $('#composer'), menuBtn = $('#chat-menu-btn');
@@ -1715,6 +1805,33 @@ function listenPeerStatus(peerUid) {
 $('#chat-menu-btn').onclick = () => { refreshChatMenu(); show($('#chat-menu-modal')); };
 $('#close-chat-menu').onclick = () => hide($('#chat-menu-modal'));
 $('#menu-wallpaper').onclick = () => { hide($('#chat-menu-modal')); buildWallpaperGrid(); show($('#wallpaper-modal')); };
+/* --- переключатель уведомлений --- */
+function refreshNotifState() {
+  const el = $('#notif-state');
+  if (!el) return;
+  el.textContent = !('Notification' in window) ? 'не поддерживается'
+    : Notification.permission === 'denied' ? 'запрещены браузером'
+    : notificationsEnabled() ? 'вкл' : 'выкл';
+}
+$('#settings-notifications').onclick = async () => {
+  if (notificationsEnabled()) {
+    localStorage.removeItem(NOTIF_KEY);
+    toast('Уведомления выключены');
+  } else if (await requestNotifications()) {
+    toast('Уведомления включены');
+  }
+  refreshNotifState();
+};
+refreshNotifState();
+
+// Нажали на уведомление — открываем нужный чат.
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    const d = e.data && e.data.open;
+    if (d && d.chatId && d.peerUid) openChat(d.chatId, d.peerUid);
+  });
+}
+
 $('#menu-profile').onclick = () => { hide($('#chat-menu-modal')); openProfile(currentPeer && currentPeer.uid); };
 
 /* --- закрепление и уведомления: локальные настройки, у каждого свои --- */
@@ -1908,6 +2025,7 @@ function listenMessages(chatId) {
       olderItems = olderItems.filter((m) => !live.has(m.id));
     }
     renderMessages();
+    if (document.visibilityState === 'visible') markChatSeen(listeningTo);
     setTimeout(() => migrateInlineMedia(listeningTo, liveItems), 1500);
    } catch (err) { console.error('Ошибка отрисовки сообщений:', err); }
   }, (err) => {
@@ -2070,6 +2188,85 @@ function renderBubble(m, mine) {
   const legacy = { sticker: 'стикер', game_invite: 'приглашение в игру' }[m.type];
   if (legacy) return `<div class="bubble" style="opacity:.65;font-style:italic;">${legacy} — из старой версии${time}</div>`;
   return `<div class="bubble" style="opacity:.65;font-style:italic;">сообщение не поддерживается${time}</div>`;
+}
+
+/* ---------- УВЕДОМЛЕНИЯ ---------- */
+// Работают, пока приложение запущено или свёрнуто. Полноценный push при
+// закрытом приложении требует отправителя с ключом сервисного аккаунта —
+// из браузера его слать нельзя, иначе кто угодно рассылал бы уведомления.
+const NOTIF_KEY = 'notifications_on';
+function notificationsEnabled() {
+  return localStorage.getItem(NOTIF_KEY) === '1'
+    && 'Notification' in window && Notification.permission === 'granted';
+}
+
+async function requestNotifications() {
+  if (!('Notification' in window)) { toast('Браузер не умеет уведомления'); return false; }
+  if (Notification.permission === 'denied') {
+    toast('Уведомления запрещены в настройках браузера для этого сайта');
+    return false;
+  }
+  // Разрешение можно спрашивать только в ответ на действие пользователя,
+  // поэтому вызывается из переключателя в настройках, а не при загрузке.
+  const res = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission();
+  if (res !== 'granted') { toast('Уведомления не разрешены'); return false; }
+  localStorage.setItem(NOTIF_KEY, '1');
+  return true;
+}
+
+let notifSound = null;
+function playPing() {
+  try {
+    // Короткий сигнал синтезируем на месте: звуковой файл тянуть ради этого незачем.
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    notifSound = notifSound || new Ctx();
+    if (notifSound.state === 'suspended') notifSound.resume();
+    const osc = notifSound.createOscillator(), gain = notifSound.createGain();
+    osc.connect(gain); gain.connect(notifSound.destination);
+    osc.frequency.value = 880;
+    gain.gain.setValueAtTime(0.0001, notifSound.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.12, notifSound.currentTime + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, notifSound.currentTime + 0.22);
+    osc.start(); osc.stop(notifSound.currentTime + 0.24);
+  } catch (e) { /* звук не критичен */ }
+}
+
+async function notifyNewMessage(chatId, meta) {
+  playPing();
+  if (!notificationsEnabled()) return;
+  // Пока вкладка на экране, системное уведомление избыточно — видно и так.
+  if (document.visibilityState === 'visible') return;
+  const support = meta.kind === 'support';
+  let title = SUPPORT_NAME;
+  if (!support && meta.lastSender) {
+    try { title = (await userProfile(meta.lastSender)).username || 'Новое письмо'; }
+    catch (e) { title = 'Новое письмо'; }
+  }
+  try {
+    const reg = await navigator.serviceWorker.getRegistration();
+    const opts = {
+      body: meta.lastPreview || '',
+      icon: './icon-192.png',
+      badge: './icon-192.png',
+      tag: chatId,            // одно уведомление на чат, а не лента из десяти
+      data: { chatId, peerUid: (Object.keys(meta.members || {}).find((u) => u !== currentUser.uid)) },
+    };
+    // Через service worker уведомление переживает сворачивание вкладки.
+    if (reg && reg.showNotification) await reg.showNotification(title, opts);
+    else new Notification(title, opts);
+  } catch (e) { console.warn('уведомление не показано', e); }
+}
+
+// Значок непрочитанных на вкладке «Чаты».
+function updateUnreadBadge() {
+  const n = [...chatMetaCache.keys()].filter((id) => hasUnread(id) && !isMuted(id)).length;
+  const tab = $('#nav-chats');
+  if (!tab) return;
+  let dot = tab.querySelector('.nav-badge');
+  if (!n) { if (dot) dot.remove(); return; }
+  if (!dot) { dot = document.createElement('span'); dot.className = 'nav-badge'; tab.appendChild(dot); }
+  dot.textContent = n > 9 ? '9+' : n;
 }
 
 /* ---------- ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ ---------- */
@@ -2484,7 +2681,11 @@ async function pushMessage(payload) {
   }
   await ref.set({ sender: currentUser.uid, ts: firebase.database.ServerValue.TIMESTAMP, ...meta });
   if (chatAtSend === supportChatId(currentUser.uid)) touchSupportIndex(preview);
-  await db.ref('chats/' + chatAtSend + '/meta').update({ lastPreview: preview, lastUpdatedAt: Date.now() });
+  // lastSender нужен, чтобы не оповещать человека о его же сообщении
+  // и не считать своё непрочитанным.
+  await db.ref('chats/' + chatAtSend + '/meta').update({
+    lastPreview: preview, lastUpdatedAt: Date.now(), lastSender: currentUser.uid,
+  });
   animateNextBubbleFly();
 }
 function animateNextBubbleFly() {

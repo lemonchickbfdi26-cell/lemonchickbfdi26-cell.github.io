@@ -1,6 +1,6 @@
 // Кэширует оболочку приложения, чтобы при повторном открытии оно грузилось мгновенно.
 // Версию кэша поднимай при каждом обновлении файлов — иначе браузер отдаст старое.
-const CACHE = 'paper-mail-v27';
+const CACHE = 'paper-mail-v28';
 
 // Пути ОТНОСИТЕЛЬНЫЕ, без ведущего слеша. Так приложение работает и в корне домена
 // (github.io), и в подпапке (локальный сервер) — абсолютный путь ушёл бы в корень
@@ -56,6 +56,20 @@ self.addEventListener('activate', (e) => {
     caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
   );
   self.clients.claim();
+});
+
+// Нажатие на уведомление должно открывать приложение, а не создавать
+// вторую вкладку поверх уже запущенной.
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  e.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
+      for (const c of list) {
+        if ('focus' in c) { c.postMessage({ open: e.notification.data }); return c.focus(); }
+      }
+      if (self.clients.openWindow) return self.clients.openWindow(self.registration.scope);
+    })
+  );
 });
 
 self.addEventListener('fetch', (e) => {
