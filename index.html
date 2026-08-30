@@ -185,6 +185,50 @@ input,textarea{user-select:text; -webkit-user-select:text;}
 .cc-title{ font-size:12px; font-weight:600; color:var(--accent); }
 .cc-text{ font-size:12.5px; color:var(--ink-soft); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
+/* Уведомление-конверт. Показывается, пока приложение открыто; системную плашку
+   при свёрнутом приложении рисует Android, и на неё повлиять нельзя. */
+#envelope-toast{
+  position:fixed; top:10px; left:10px; right:10px; z-index:950;
+  display:flex; align-items:center; gap:12px;
+  padding:13px 14px 13px 16px; border-radius:10px; cursor:pointer;
+  background:linear-gradient(155deg, #fdfaf2 0%, #f2ead8 100%);
+  border:1px solid #e0d4b6;
+  box-shadow:0 10px 30px rgba(47,42,34,.28);
+  transform:translateY(-130%); transition:transform .38s cubic-bezier(.22,1.1,.36,1);
+  overflow:hidden;
+}
+#envelope-toast.shown{ transform:translateY(0); }
+#envelope-toast.hidden{ display:none; }
+/* Клапан конверта — треугольник сверху, как на обороте настоящего письма. */
+.env-flap{
+  position:absolute; top:0; left:0; right:0; height:34px; pointer-events:none;
+  background:linear-gradient(170deg, rgba(224,212,182,.55), transparent 70%);
+  clip-path:polygon(0 0, 100% 0, 50% 100%);
+}
+/* Восковая печать: радиальный градиент даёт выпуклость, тень — толщину сургуча. */
+.env-seal{
+  position:relative; flex-shrink:0; width:38px; height:38px; border-radius:50%;
+  background:radial-gradient(circle at 34% 30%, #d05a3c 0%, #b8422a 45%, #8f2f1d 100%);
+  box-shadow:0 2px 5px rgba(47,42,34,.4), inset 0 -2px 4px rgba(0,0,0,.28), inset 0 2px 3px rgba(255,255,255,.25);
+  display:flex; align-items:center; justify-content:center;
+  color:#f7ded4; font-family:var(--serif); font-size:21px; line-height:1;
+  text-shadow:0 1px 1px rgba(0,0,0,.35);
+}
+/* Неровный край — у настоящего сургуча он никогда не идеально круглый. */
+.env-seal::after{
+  content:''; position:absolute; inset:-2px; border-radius:50%;
+  border:1.5px dashed rgba(143,47,29,.35);
+}
+.env-body{ flex:1; min-width:0; position:relative; }
+.env-from{ font-weight:700; font-size:14px; color:var(--ink); }
+.env-text{
+  font-size:12.5px; color:var(--ink-soft);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+@media (prefers-reduced-motion: reduce){
+  #envelope-toast{ transition:none; }
+}
+
 /* Непрочитанные */
 .chat-row.unread .name{ font-weight:800; }
 .chat-row.unread .preview{ color:var(--ink); }
@@ -901,6 +945,15 @@ button.file-card{
       <div id="viewer-body"></div>
     </div>
 
+    <div id="envelope-toast" class="hidden">
+      <div class="env-flap"></div>
+      <div class="env-seal"><span id="env-initial">П</span></div>
+      <div class="env-body">
+        <div class="env-from" id="env-from">—</div>
+        <div class="env-text" id="env-text"></div>
+      </div>
+    </div>
+
     <div id="profile-modal" class="modal-backdrop hidden">
       <div class="modal-sheet profile-sheet">
         <div class="profile-avatar"><img id="profile-avatar-img" src="" alt=""></div>
@@ -998,7 +1051,7 @@ function ico(name, size) { return `<span class="ico" style="width:${size || 20}p
 /* ---------- 0. МЕТКА СБОРКИ ---------- */
 // Ставится в самом начале, до всего остального: если на экране «—»,
 // значит скрипт упал ещё до этой строки либо открыт старый файл.
-const BUILD = 'v29';
+const BUILD = 'v30';
 console.log('Бумажная почта, сборка', BUILD);
 window.addEventListener('DOMContentLoaded', () => {
   const el = document.getElementById('build-stamp');
@@ -1842,35 +1895,75 @@ async function requestNotifications() {
   return true;
 }
 
-let notifSound = null;
+let notifAudio = null, audioUnlocked = false;
+
+// Браузер не даёт играть звук до первого касания экрана. Разблокируем один раз
+// на любом действии пользователя, иначе первое уведомление окажется беззвучным.
+function unlockAudio() {
+  if (audioUnlocked) return;
+  audioUnlocked = true;
+  notifAudio = new Audio('./assets/audio/notify.mp3');
+  notifAudio.preload = 'auto';
+  notifAudio.volume = 0.7;
+  notifAudio.load();
+}
+['pointerdown', 'keydown', 'touchstart'].forEach((ev) =>
+  window.addEventListener(ev, unlockAudio, { once: true, passive: true }));
+
 function playPing() {
   try {
-    // Короткий сигнал синтезируем на месте: звуковой файл тянуть ради этого незачем.
-    const Ctx = window.AudioContext || window.webkitAudioContext;
-    if (!Ctx) return;
-    notifSound = notifSound || new Ctx();
-    if (notifSound.state === 'suspended') notifSound.resume();
-    const osc = notifSound.createOscillator(), gain = notifSound.createGain();
-    osc.connect(gain); gain.connect(notifSound.destination);
-    osc.frequency.value = 880;
-    gain.gain.setValueAtTime(0.0001, notifSound.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.12, notifSound.currentTime + 0.01);
-    gain.gain.exponentialRampToValueAtTime(0.0001, notifSound.currentTime + 0.22);
-    osc.start(); osc.stop(notifSound.currentTime + 0.24);
+    if (!notifAudio) unlockAudio();
+    notifAudio.currentTime = 0;
+    const p = notifAudio.play();
+    if (p && p.catch) p.catch(() => {});   // запрет автозапуска — не повод падать
   } catch (e) { /* звук не критичен */ }
+}
+
+/* --- конверт с печатью --- */
+let envelopeTimer = null;
+
+function showEnvelope(name, text, chatId, peerUid) {
+  const el = $('#envelope-toast');
+  $('#env-from').textContent = name;
+  $('#env-text').textContent = text || 'новое письмо';
+  // На печати — первая буква имени отправителя, как монограмма на сургуче.
+  $('#env-initial').textContent = (name || '?').trim().charAt(0).toUpperCase();
+
+  el.classList.remove('hidden');
+  // Двойной requestAnimationFrame: без него класс появляется в том же кадре,
+  // что и display, и переход не проигрывается — конверт просто возникает.
+  requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add('shown')));
+
+  el.onclick = () => { hideEnvelope(); if (chatId && peerUid) openChat(chatId, peerUid); };
+
+  clearTimeout(envelopeTimer);
+  envelopeTimer = setTimeout(hideEnvelope, 5000);
+}
+
+function hideEnvelope() {
+  const el = $('#envelope-toast');
+  el.classList.remove('shown');
+  clearTimeout(envelopeTimer);
+  setTimeout(() => el.classList.add('hidden'), 400);   // ждём завершения перехода
 }
 
 async function notifyNewMessage(chatId, meta) {
   playPing();
-  if (!notificationsEnabled()) return;
-  // Пока вкладка на экране, системное уведомление избыточно — видно и так.
-  if (document.visibilityState === 'visible') return;
   const support = meta.kind === 'support';
+  const peerUid = Object.keys(meta.members || {}).find((u) => u !== currentUser.uid);
   let title = SUPPORT_NAME;
   if (!support && meta.lastSender) {
     try { title = (await userProfile(meta.lastSender)).username || 'Новое письмо'; }
     catch (e) { title = 'Новое письмо'; }
   }
+
+  // Приложение на экране — показываем свой конверт. Системная плашка тут была бы
+  // и лишней, и всё равно нарисованной системой, а не нами.
+  if (document.visibilityState === 'visible') {
+    showEnvelope(title, meta.lastPreview, chatId, peerUid);
+    return;
+  }
+  if (!notificationsEnabled()) return;
   try {
     const reg = await navigator.serviceWorker.getRegistration();
     const opts = {
@@ -1878,7 +1971,7 @@ async function notifyNewMessage(chatId, meta) {
       icon: './icon-192.png',
       badge: './icon-192.png',
       tag: chatId,            // одно уведомление на чат, а не лента из десяти
-      data: { chatId, peerUid: (Object.keys(meta.members || {}).find((u) => u !== currentUser.uid)) },
+      data: { chatId, peerUid },
     };
     // Через service worker уведомление переживает сворачивание вкладки.
     if (reg && reg.showNotification) await reg.showNotification(title, opts);
